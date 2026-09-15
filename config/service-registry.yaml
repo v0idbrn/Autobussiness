@@ -1,0 +1,57 @@
+# Service Registry — BAM invokes these via subprocess adapters only.
+# contract_version is verified before every run (see docs/service-contracts.md).
+
+services:
+  pdf-to-excel:
+    contract_version: 1
+    enabled: true
+    risk: low
+    purpose: "Deterministic vector-PDF table extraction to XLSX/CSV with audit trail"
+    input: "PDF files or a directory of PDFs"
+    output: "XLSX per PDF (optional CSV), report.json + per-file .audit.json"
+    working_directory: "F:/Gigs/Excel to PDF"
+    command: '.venv-less python: use configured interpreter; cli.py -i <inputs> -o <outdir> [--csv]'
+    interpreter: "python"          # resolved at runtime: PROJECT_PDF_PYTHON env, else 'python'
+    entry: "cli.py"
+    preflight: "--self-test"
+    validation:
+      exit_code: 0
+      report: "report.json"
+      report_check: "no fatal per-file errors"
+    timeout_s: 300
+
+  excel-cleaner:
+    contract_version: 1
+    enabled: true
+    risk: medium
+    purpose: "Deterministic Excel/CSV cleaning with zero-trust validation and audit deliverables"
+    input: "Directory of CSV/XLSX files"
+    output: "Cleaned files + batch_audit_summary.json (+ per-file audits, optional ZIP)"
+    working_directory: "F:/Gigs/Excel Cleaner"
+    command: "batch_processor.py <in_dir> <out_dir> [--zip]"
+    interpreter: "F:/Gigs/Excel Cleaner/.venv/Scripts/python.exe"
+    entry: "batch_processor.py"
+    preflight: "fixture-smoke"     # no --self-test exists; adapter uses a tiny fixture
+    validation:
+      exit_code: 0
+      report: "batch_audit_summary.json"
+      report_check: "errors == 0 (quarantined files still exit 0 - never trust exit code alone)"
+    timeout_s: 300
+
+  qa-agent:
+    contract_version: 0
+    enabled: false                 # Phase 2: adapter not implemented yet
+    risk: medium
+    purpose: "Bounded autonomous QA audit cycle (provisional contract)"
+    input: "Target directory or URL + profile"
+    output: "audit_report.json + run_manifest.json in output dir"
+    working_directory: "F:/Gigs/QA_Automation_Agent"
+    command: "main.py run <target> --profile ci --headless --output <outdir>"
+    interpreter: "F:/Gigs/QA_Automation_Agent/.venv/Scripts/python.exe"
+    entry: "main.py"
+    preflight: null
+    validation:
+      exit_code: 0
+      report: "audit_report.json"
+      report_check: "quality_gate.status in (PASS, PASS_WITH_WARNINGS)"
+    timeout_s: 900

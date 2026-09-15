@@ -1,0 +1,19 @@
+# BAM denylist - checked at intake, pre-fetch, pre-queue, pre-approval, pre-contact.
+# Matching is exact on registered domain (e.g. "example.co.uk" style entries are
+# matched as-is) and case-insensitive on normalized company name.
+#
+# Categories:
+#   do_not_research : skip entirely - never fetched, never stored
+#   do_not_contact  : MAY be researched, must NEVER be contacted
+#                     (enforced by `bam contact`; research pipeline notes it)
+#   blocked_domain  / blocked_company : hard blocks (research refused)
+
+do_not_research: []
+do_not_contact: []
+blocked_domain: []
+blocked_company: []
+
+# Optional coarse rules (keyword in normalized company name); keep tiny.
+category_rules: []
+#  - match: "acme competitor"
+#    category: do_not_contact

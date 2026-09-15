@@ -1,0 +1,34 @@
+# BAM runtime configuration.
+# Everything here is overridable; the LLM cost limit is deliberately NOT hardcoded
+# truth - set it commercially once provider pricing is known.
+
+database:
+  path: "data/bam.db"
+
+fetch:
+  max_pages: 5                 # homepage + up to max_subpages subpages
+  max_subpages: 4              # /about, /services, /team, /contact in research
+  max_bytes_per_page: 2097152  # 2 MB
+  max_redirects: 5
+  timeout_s: 15
+  max_requests_per_domain: 8   # per run (robots + homepage + 4 subpages + headroom)
+  max_run_seconds: 120
+  min_interval_per_domain_s: 1.0
+  user_agent: "BAM-ResearchBot/0.1 (+local research; contact: operator@local)"
+
+llm:
+  enabled: false               # V1 default: 0 calls. Flip to true when provider chosen.
+  provider: "none"             # none | openai-compatible (adapter in llm.py)
+  model: ""
+  base_url: ""                 # empty = provider default; set for local/Ollama-compatible
+  api_key_env: "BAM_LLM_API_KEY"
+  max_calls: 1                 # hard cap per lead in V1
+  max_input_tokens: 4000
+  max_output_tokens: 1200
+  max_cost_per_lead: 0.10      # configurable; not a hardcoded commercial truth
+  provider_timeout_s: 30
+
+paths:
+  evidence_dir: "data/leads"
+  jobs_dir: "data/jobs"
+  runs_dir: "data/runs"

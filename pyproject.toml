@@ -1,0 +1,38 @@
+[project]
+name = "bam"
+version = "0.1.0"
+description = "Business Automation Machine - local-first prospect-to-delivery operating system"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+# Runtime dependencies: EXACTLY these two. Everything else is dev/tooling.
+# Do not add pandas/pdfplumber/playwright here - services run in their own venvs.
+dependencies = [
+    "httpx>=0.28,<1.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+]
+
+# Tooling (NOT a Python dependency): uv manages the environment and lockfile.
+# Env: uv sync ; Tests: uv run pytest ; CLI: uv run bam --help
+
+[project.scripts]
+bam = "bam.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12,<1.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[tool.uv.build-backend]
+module-root = ""   # flat layout: package lives at ./bam, not ./src/bam
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

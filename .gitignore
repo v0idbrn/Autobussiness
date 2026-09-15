@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# BAM runtime data (never commit: leads, evidence, jobs, DB).
+# denylist.yaml is policy, not runtime data - it IS committed.
+data/*
+!data/denylist.yaml
+
+# Backups are business data, not source (self-verified, but still local-only)
+backups/
+
+# Third-party research clones (reference material, not part of BAM)
+ECC/
+graphify/
+ponytail/
+skills/
+
+# Local agent/tool state
+.agents/
+.freebuff/
+.opencode/
+dist/
+
+# Scratch / one-off inspection scripts
+_inspect_db.py
+
+# Secrets
+.env
+*.key
+
+# OS
+Thumbs.db
+.DS_Store

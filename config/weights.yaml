@@ -1,0 +1,26 @@
+# Opportunity scoring weights (deterministic; LLM never touches these).
+# Each dimension is 0-3, weighted; total normalized to 0-100.
+# Confidence derives from OBSERVED evidence count/diversity/recency.
+
+dimensions:
+  fit: 0.20
+  evidence: 0.15
+  business_impact: 0.15
+  service_match: 0.15
+  delivery_feasibility: 0.10
+  urgency: 0.10
+  buying_signal: 0.08
+  contactability: 0.07
+
+thresholds:
+  auto_queue_min: 70        # >= 70 -> approval_required (notified)
+  review_min: 50            # 50-69 -> human review; < 50 -> disqualified(reason)
+
+caps:
+  min_observed_for_full_score: 2   # < 2 OBSERVED => score <= 40
+  capped_score: 40
+  empty_evidence: do_not_qualify   # no evidence at all => never qualified
+
+confidence:
+  high_min_observed: 5
+  medium_min_observed: 2
