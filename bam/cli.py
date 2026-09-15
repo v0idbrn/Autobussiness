@@ -809,6 +809,24 @@ def main(argv: list[str] | None = None) -> int:
                 contact_path=brief.contact_path,
             )
 
+            # §15 honesty gate: when the WHY was hypothetical (no observed
+            # commercial signals / no OBSERVED evidence), the draft must use
+            # conditional phrasing - never assert unobserved pain as fact.
+            from bam.copilot import enforce_hypothesis_honesty, explain_why as _explain_why
+            profile_signals = {}
+            if profile_path.exists():
+                try:
+                    profile_signals = json.loads(
+                        profile_path.read_text(encoding="utf-8")).get("signals", {})
+                except Exception:
+                    pass
+            _why = _explain_why(
+                {"recommended_service": lead.recommended_service, "score": lead.score,
+                 "state": lead.state},
+                evidence, profile_signals.get("commercial", {}),
+                profile_signals.get("commercial", {}).get("contactability", {}))
+            draft.body = enforce_hypothesis_honesty(draft.body, hypothesis=_why.hypothesis)
+
             if args.channel:
                 draft.channel = args.channel
 
@@ -1077,7 +1095,15 @@ def main(argv: list[str] | None = None) -> int:
             store = _store()
             followups = store.pending_follow_ups()
             candidates = store.queue_candidates()
-            entries, stats = build_daily_queue(candidates, limit=5)
+            # §16 anti-spam caps are configurable, not hardcoded; the cap
+            # counts REAL contact actions from the audit trail (last 7 days)
+            # so repeated runs cannot quietly exceed the daily budget.
+            sales_cfg = (load_config().raw.get("sales") or {})
+            entries, stats = build_daily_queue(
+                candidates,
+                limit=int(sales_cfg.get("queue_top", 5)),
+                contacted_this_week=store.contact_actions_last_7_days(),
+                max_daily_outreach=int(sales_cfg.get("max_daily_outreach", 5)))
 
             print("TODAY'S SALES QUEUE")
             print("=" * 60)
@@ -1125,6 +1151,19 @@ def main(argv: list[str] | None = None) -> int:
             quotes_pending = store._conn().execute(
                 "SELECT COUNT(*) FROM quotes WHERE state='approved'").fetchone()[0]
             print(f"Quotes pending: {quotes_pending}")
+            # §28-30: which source/query actually produces qualified leads.
+            # Only shown when there is real data — no conclusions from tiny samples.
+            src_quality = store.source_quality()
+            if src_quality and sum(s.get("qualified", 0) for s in src_quality) > 0:
+                best_src = src_quality[0]
+                print(f"Best source so far: {best_src.get('source', '?')} "
+                      f"({best_src.get('qualified', 0)} qualified)")
+            q_quality = store.query_quality(limit=1)
+            if q_quality and q_quality[0].get("qualified", 0) > 0:
+                best_q = q_quality[0]
+                print(f"Best query so far: {best_q.get('query', '?')!r} "
+                      f"({best_q.get('qualified', 0)} qualified / "
+                      f"{best_q.get('researched', 0)} researched)")
             return 0
 
         if args.command == "clients":

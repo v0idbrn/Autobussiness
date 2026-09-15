@@ -258,6 +258,44 @@ def test_campaign_feedback_loop(store) -> None:
     assert n == 1
 
 
+# ------------------------------------------------- store-backed cap + digest (§16/§28-30)
+
+
+def test_contact_actions_last_7_days_counts_real_actions(store) -> None:
+    """The anti-spam cap reads REAL contact actions from the audit trail:
+    both the HUMAN approval path (external_action -> contacted) and direct
+    transitions. Other audit noise must not inflate the count."""
+    cid = store.upsert_company("Cap Co", "capco.test")
+    lid = store.upsert_lead(cid, "https://capco.test", "run-cap")
+    store.transition_lead(lid, "researched")
+    store.transition_lead(lid, "qualified")
+    store.transition_lead(lid, "approval_required")
+    assert store.contact_actions_last_7_days() == 0
+
+    # human-gated contact (the real path: bam approve -> bam contact)
+    store.record_approval(subject_type="lead", subject_id=lid,
+                          kind="commercial", to_state="approved",
+                          decided_by="operator")
+    store.record_approval(subject_type="lead", subject_id=lid,
+                          kind="external_action", to_state="contacted",
+                          decided_by="operator")
+    assert store.contact_actions_last_7_days() == 1
+
+    # a second lead contacted the same way also counts
+    cid2 = store.upsert_company("Cap 2", "cap2.test")
+    lid2 = store.upsert_lead(cid2, "https://cap2.test", "run-cap")
+    store.transition_lead(lid2, "researched")
+    store.transition_lead(lid2, "qualified")
+    store.transition_lead(lid2, "approval_required")
+    store.record_approval(subject_type="lead", subject_id=lid2,
+                          kind="commercial", to_state="approved",
+                          decided_by="operator")
+    store.record_approval(subject_type="lead", subject_id=lid2,
+                          kind="external_action", to_state="contacted",
+                          decided_by="operator")
+    assert store.contact_actions_last_7_days() == 2
+
+
 # --------------------------------------------------------- queue from the store
 
 

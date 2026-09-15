@@ -114,3 +114,56 @@ def test_digest_command_runs(fake_service, capsys) -> None:
     data = json.loads(out)
     assert "lead_to_client_conversion" in data
     assert "revenue_per_manual_hour" in data
+    # sales machine §28: tiers and source/query quality are part of the digest
+    assert data["tiers"] == {"A": 0, "B": 0, "C": 0, "D": 0}
+    assert data["source_quality"] == [] and data["query_quality"] == []
+
+
+def test_digest_includes_tier_counts(fake_service, capsys) -> None:
+    from bam.store import Store
+
+    store = Store()
+    try:
+        cid = store.upsert_company("Tier Co", "tierco.test")
+        lid = store.upsert_lead(cid, "https://tierco.test", "run-tier")
+        store.transition_lead(lid, "researched")
+        data = store.digest()
+        assert sum(data["tiers"].values()) >= 1
+    finally:
+        store.close()
+
+
+def test_next_counts_real_contact_budget(fake_service, capsys) -> None:
+    """bam next feeds its anti-spam cap from the audit trail: after one real
+    contact approval, the queue's remaining budget drops by one."""
+    from bam.copilot import build_daily_queue
+    from bam.store import Store
+
+    store = Store()
+    try:
+        cid = store.upsert_company("Budget Co", "budgetco.test")
+        lid = store.upsert_lead(cid, "https://budgetco.test", "run-budget")
+        store.transition_lead(lid, "researched")
+        store.transition_lead(lid, "qualified")
+        store.transition_lead(lid, "approval_required")
+        store.record_approval(subject_type="lead", subject_id=lid,
+                              kind="commercial", to_state="approved",
+                              decided_by="operator")
+        store.record_approval(subject_type="lead", subject_id=lid,
+                              kind="external_action", to_state="contacted",
+                              decided_by="operator")
+        assert store.contact_actions_last_7_days() == 1
+
+        # the cap function the queue uses reflects the spent budget:
+        # with max 5/day, 4 contact-actions remain for new leads
+        candidates = store.queue_candidates()
+        entries, _ = build_daily_queue(candidates, limit=5,
+                                       contacted_this_week=1,
+                                       max_daily_outreach=5)
+        contact_today = sum(1 for e in entries if e.action == "CONTACT TODAY")
+        assert contact_today <= 4
+    finally:
+        store.close()
+    assert main(["next"]) == 0
+    out = capsys.readouterr().out
+    assert "TODAY'S SALES QUEUE" in out

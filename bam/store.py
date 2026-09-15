@@ -1319,6 +1319,29 @@ class Store:
 
     # -- digest -----------------------------------------------------------------------
 
+    def contact_actions_last_7_days(self) -> int:
+        """Count real contact actions in the trailing 7 days (audit_log is the
+        source of truth: both record_approval() for external_action and
+        lead.transition to 'contacted' write there). Feeds the §16 anti-spam
+        cap so the queue's daily budget reflects what was actually sent,
+        not an assumed zero. Pure read."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(
+            timespec="seconds")
+        conn = self._conn()
+        approvals = conn.execute(
+            "SELECT COUNT(*) AS n FROM audit_log"
+            " WHERE action = 'approval.record' AND ts >= ?"
+            " AND payload_json LIKE '%\"to\": \"contacted\"%'",
+            (cutoff,),
+        ).fetchone()["n"]
+        transitions = conn.execute(
+            "SELECT COUNT(*) AS n FROM audit_log"
+            " WHERE action = 'lead.transition' AND ts >= ?"
+            " AND entity_type = 'lead' AND payload_json LIKE '%\"to\": \"contacted\"%'",
+            (cutoff,),
+        ).fetchone()["n"]
+        return int(approvals + transitions)
+
     def digest(self) -> dict[str, Any]:
         """Business metrics (plan v3.1 §13). Pure reads; no dashboard."""
         conn = self._conn()
@@ -1378,6 +1401,22 @@ class Store:
             "SELECT COUNT(*) AS n FROM follow_ups WHERE completed = 0 AND due_date < ?",
             (_utcnow()[:10],),
         ).fetchone()["n"]
+        # §28: A/B tiers from the same candidate view the daily queue uses.
+        # Excludes terminal-reject states; keeps scoring purely for priority.
+        tier_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+        try:
+            from bam.copilot import classify_tier
+            for cand in self.queue_candidates():
+                t = classify_tier(
+                    score=cand.get("score"),
+                    commercial=cand.get("commercial") or {},
+                    contactability=cand.get("contactability") or {},
+                    recommended_service=cand.get("recommended_service"),
+                    lead_state=cand.get("state", ""))
+                if t in tier_counts:
+                    tier_counts[t] += 1
+        except Exception:
+            pass  # digest must never fail for copilot import issues
 
         return {
             "leads_by_state": leads_by_state,
@@ -1405,6 +1444,9 @@ class Store:
                 "pending_follow_ups": pending_follow_ups,
                 "overdue_follow_ups": overdue_follow_ups,
             },
+            "tiers": tier_counts,
+            "source_quality": self.source_quality(),
+            "query_quality": self.query_quality(limit=5),
         }
 
     # -- backup / restore -----------------------------------------------------------
