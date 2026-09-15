@@ -24,8 +24,11 @@ DISCOVER  →  RESEARCH  →  QUALIFY  →  SALES BRIEF  →  DRAFT OUTREACH
    →  JOB  →  DELIVERY  →  PAYMENT
 ```
 
-- **Discovery**: real companies from Google News RSS queries, manual URL
-  lists, CSV files or free text — denylist-filtered, rate-limited.
+- **Discovery**: real companies from multiple public sources:
+  - **Job boards**: WordPress Jobs, We Work Remotely, Remote OK, Jobicy (RSS/API)
+  - **News RSS**: Google News search with intent phrases
+  - **Directories**: curated association member pages
+  All denylist-filtered, rate-limited, robots.txt aware.
 - **Research**: guarded multi-page fetch (homepage + about/services/team/
   contact) with SSRF defenses, robots.txt awareness, per-domain request caps,
   byte/size/time budgets. Deterministic extraction (JSON-LD, meta, tech,
@@ -95,15 +98,17 @@ uv run bam doctor
 ## Quick start
 
 ```bash
-uv run bam discover --source rss --query "accounting firms" --limit 10
+# Daily sales hunt: discover → research → qualify → opportunities (one command)
+uv run bam hunt
+uv run bam hunt --service pdf_to_excel
+uv run bam hunt --service excel_cleaning qa_automation
 
-# Commercial-intent campaign: curated directories first, then query catalog
-# (per service), publishers/aggregators filtered automatically:
-uv run bam discover --campaign pdf_to_excel excel_cleaning \
-    --directory "https://www.cpadirectory.com/" --per-query 5
+# Or step by step:
+uv run bam discover --intent --campaign pdf_to_excel --limit 10
 uv run bam research https://example-company.com
-uv run bam leads
-uv run bam next
+uv run bam opportunities                    # all open opportunities
+uv run bam next                             # today's prioritized queue
+uv run bam campaign-report                  # funnel + source/query quality
 ```
 
 The full commercial walkthrough is in [QUICKSTART.md](QUICKSTART.md)
@@ -113,10 +118,23 @@ The full commercial walkthrough is in [QUICKSTART.md](QUICKSTART.md)
 
 ```bash
 bam doctor                                   # environment check
+bam bootstrap                                # seed queries + import data (cold start)
+bam bootstrap --service pdf_to_excel         # seed queries for one service
+bam bootstrap --import-csv leads.csv         # import leads from CSV
+bam bootstrap --dry-run                      # preview without writing
+bam hunt                                     # daily sales: discover → research → qualify → opportunities
+bam hunt --service pdf_to_excel              # hunt for specific service
+bam hunt --service excel_cleaning qa_automation  # hunt for multiple services
+bam hunt --market Argentina                  # focus on specific market
 bam discover --source rss --query "..."      # find companies (1 request/query)
+bam discover --intent --campaign pdf_to_excel # find PUBLIC EXPRESSIONS OF NEED
+bam discover --intent --intent-query "..."   # custom intent query
+bam discover --intent --directory URL        # mine curated directory for leads
 bam research <url>                           # evidence-backed research
 bam leads [--state approval_required]        # pipeline overview
-bam next                                     # what to do next
+bam next                                     # today's prioritized queue
+bam opportunities                            # all open opportunities
+bam campaign-report                          # funnel + source/query quality
 bam sales-brief <id>                         # evidence-based brief
 bam draft-outreach <id> [--file|--mailto]    # draft only - never sends
 bam approve-contact <id> -y                  # HUMAN approval gate
@@ -144,18 +162,20 @@ bam services                                 # registry + preflight status
 ```text
 bam/            package: cli, store, pipeline, fetcher, evidence, extractors,
                 scorer, llm, commercial, contacts, discovery, reporting,
-                adapters, router, manifest, denylist, approvals, config
+                adapters, router, manifest, denylist, approvals, config,
+                intent, intent_sources, signals, copilot
 config/         YAML configuration (committed)
 data/           runtime data (gitignored) + denylist policy (committed)
-docs/           frozen service contracts
-tests/          offline pytest suite (188 tests, no network)
+data/bootstrap/ seed queries and import templates
+docs/           frozen service contracts, source registry
+tests/          offline pytest suite (291+ tests, no network)
 backups/        self-verifying DB backups (gitignored)
 ```
 
 ## Testing
 
 ```bash
-uv run pytest tests/ -q      # 188 tests, fully offline and deterministic
+uv run pytest tests/ -q      # 291+ tests, fully offline and deterministic
 ```
 
 The suite never touches the network, production data or external services.
@@ -209,7 +229,8 @@ is not consent. No bulk messaging.
 - Evidence stores a redacted excerpt + hash, not full HTML; re-verification
   means re-fetching.
 - The optional LLM is disabled by default; INFERRED claims stay inactive.
-- Discovery quality depends on Google News RSS availability.
+- Discovery quality depends on public RSS/API availability.
+- Job board sources produce MEDIUM intent (hiring signal, not buying signal).
 - WHOIS extraction depends on whois.com's HTML layout (skips on failure).
 - The QA Agent adapter awaits its Phase 2 CLI.
 

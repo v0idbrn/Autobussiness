@@ -24,9 +24,11 @@ DISCOVER  →  RESEARCH  →  QUALIFY  →  SALES BRIEF  →  DRAFT OUTREACH
    →  JOB  →  DELIVERY  →  PAYMENT
 ```
 
-- **Discovery**: empresas reales desde búsquedas RSS de Google News, listas
-  manuales de URLs, archivos CSV o texto libre — filtradas por denylist y con
-  límites de tasa.
+- **Discovery**: empresas reales desde múltiples fuentes públicas:
+  - **Job boards**: WordPress Jobs, We Work Remotely, Remote OK, Jobicy (RSS/API)
+  - **News RSS**: búsqueda en Google News con frases de intención
+  - **Directorios**: páginas de asociaciones curadas
+  Todas filtradas por denylist, con límites de tasa y respeto por robots.txt.
 - **Research**: fetch multi-página protegido (home + about/services/team/
   contact) con defensas SSRF, respeto por robots.txt, límites por dominio y
   presupuestos de bytes/tiempo. Extracción determinista (JSON-LD, meta,
@@ -104,13 +106,19 @@ servicios.
 ```bash
 uv run bam discover --source rss --query "accounting firms" --limit 10
 
-# Campaña de intención comercial: primero directorios curados, luego catálogo
-# de queries (por servicio), con filtrado automático de publishers/agregadores:
-uv run bam discover --campaign pdf_to_excel excel_cleaning \
-    --directory "https://www.cpadirectory.com/" --per-query 5
+# Encontrar EXPRESIONES PÚBLICAS DE NECESIDAD (contrataciones, pedidos de ayuda)
+uv run bam discover --intent --campaign pdf_to_excel --limit 10
+uv run bam discover --intent --intent-query "help converting PDF to Excel"
+
+# Minar directorio curado para leads (intención débil/media — prueba existencia, no necesidad)
+uv run bam discover --intent --directory "https://<url-del-directorio>" --limit 10
+
+# Revisar y actuar
+uv run bam opportunities                    # todas las oportunidades abiertas
+uv run bam next                             # cola priorizada del día
+uv run bam campaign-report                  # embudo + calidad de fuentes/queries
 uv run bam research https://empresa-ejemplo.com
 uv run bam leads
-uv run bam next
 ```
 
 El recorrido comercial completo está en [QUICKSTART.es.md](QUICKSTART.es.md).
@@ -119,10 +127,19 @@ El recorrido comercial completo está en [QUICKSTART.es.md](QUICKSTART.es.md).
 
 ```bash
 bam doctor                                   # chequeo de entorno
+bam bootstrap                                # sembrar queries + importar datos (arranque en frío)
+bam bootstrap --service pdf_to_excel         # sembrar queries para un servicio
+bam bootstrap --import-csv leads.csv         # importar leads desde CSV
+bam bootstrap --dry-run                      # previsualizar sin escribir
 bam discover --source rss --query "..."      # encontrar empresas (1 request/query)
+bam discover --intent --campaign pdf_to_excel # encontrar EXPRESIONES PÚBLICAS DE NECESIDAD
+bam discover --intent --intent-query "..."   # query de intención personalizado
+bam discover --intent --directory URL        # minar directorio curado para leads
 bam research <url>                           # investigación con evidencia
 bam leads [--state approval_required]        # vista del pipeline
-bam next                                     # qué hacer ahora
+bam next                                     # cola priorizada del día
+bam opportunities                            # todas las oportunidades abiertas
+bam campaign-report                          # embudo + calidad de fuentes/queries
 bam sales-brief <id>                         # brief basado en evidencia
 bam draft-outreach <id> [--file|--mailto]    # solo borrador - nunca envía
 bam approve-contact <id> -y                  # gate de aprobación HUMANA
@@ -152,18 +169,20 @@ bam services                                 # registro + estado de servicios
 ```text
 bam/            paquete: cli, store, pipeline, fetcher, evidence, extractors,
                 scorer, llm, commercial, contacts, discovery, reporting,
-                adapters, router, manifest, denylist, approvals, config
+                adapters, router, manifest, denylist, approvals, config,
+                intent, intent_sources, signals, copilot
 config/         configuración YAML (versionada)
 data/           datos de runtime (gitignored) + política denylist (versionada)
-docs/           contratos de servicios congelados
-tests/          suite pytest offline (188 tests, sin red)
+data/bootstrap/ queries semilla y plantillas de importación
+docs/           contratos de servicios congelados, registro de fuentes
+tests/          suite pytest offline (291+ tests, sin red)
 backups/        backups auto-verificados (gitignored)
 ```
 
 ## Tests
 
 ```bash
-uv run pytest tests/ -q      # 188 tests, totalmente offline y deterministas
+uv run pytest tests/ -q      # 291+ tests, totalmente offline y deterministas
 ```
 
 La suite nunca toca la red, datos de producción ni servicios externos.
@@ -222,8 +241,9 @@ contacto públicos no son consentimiento. Sin mensajería masiva.
   reverificar implica re-fetch.
 - El LLM opcional está deshabilitado por defecto; los claims INFERRED quedan
   inactivos.
-- La calidad del discovery depende de la disponibilidad del RSS de Google
-  News.
+- La calidad del discovery depende de la disponibilidad de RSS/APIs públicas.
+- Las fuentes de job boards producen intención MEDIA (señal de contratación,
+  no de compra).
 - La extracción WHOIS depende del layout HTML de whois.com (falla en silencio
   si cambia).
 - El adaptador del QA Agent espera su CLI de Fase 2.

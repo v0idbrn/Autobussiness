@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from bam.config import Config, load_config
+from bam.intent import is_expired
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _SCHEMA = [
     # migration 1 (schema_meta is created by _migrate(); do not re-create here)
@@ -256,6 +257,61 @@ _SCHEMA = [
         created_at TEXT NOT NULL
     );
     CREATE INDEX idx_query_stats_query ON query_stats(query);
+    """,
+    # migration 6: commercial intent opportunities (intent engine §9-§11)
+    """
+    CREATE TABLE IF NOT EXISTS opportunities (
+        id INTEGER PRIMARY KEY,
+        company_id INTEGER REFERENCES companies(id),
+        lead_id INTEGER REFERENCES leads(id),
+        company_label TEXT,
+        source_url TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        published_at TEXT,
+        title TEXT NOT NULL,
+        snippet TEXT,
+        intent_tier TEXT NOT NULL CHECK (intent_tier IN
+            ('explicit','strong','medium','weak')),
+        intent_score INTEGER NOT NULL,
+        service_fit TEXT,
+        freshness TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'discovered' CHECK (state IN
+            ('discovered','researched','qualified','approval_required',
+             'approved','contacted','replied','quoted','won','lost','expired',
+             'dismissed')),
+        dedup_key TEXT NOT NULL,
+        evidence_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_opportunities_dedup ON opportunities(dedup_key);
+    CREATE INDEX idx_opportunities_state ON opportunities(state);
+    """,
+    # migration 7: query catalog for learning and selection (§27-§30).
+    # Tracks per-query cumulative performance and state across campaigns.
+    """
+    CREATE TABLE IF NOT EXISTS query_catalog (
+        id INTEGER PRIMARY KEY,
+        query TEXT NOT NULL,
+        service TEXT,
+        source TEXT NOT NULL DEFAULT 'unknown',
+        state TEXT NOT NULL DEFAULT 'new'
+            CHECK (state IN ('new','active','promising','weak','retired')),
+        runs INTEGER NOT NULL DEFAULT 0,
+        total_candidates INTEGER NOT NULL DEFAULT 0,
+        total_researched INTEGER NOT NULL DEFAULT 0,
+        total_qualified INTEGER NOT NULL DEFAULT 0,
+        total_contactable INTEGER NOT NULL DEFAULT 0,
+        total_contacted INTEGER NOT NULL DEFAULT 0,
+        total_replies INTEGER NOT NULL DEFAULT 0,
+        total_positive INTEGER NOT NULL DEFAULT 0,
+        total_quotes INTEGER NOT NULL DEFAULT 0,
+        total_won INTEGER NOT NULL DEFAULT 0,
+        last_run_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_query_catalog_dedup ON query_catalog(query, service, source);
+    CREATE INDEX idx_query_catalog_state ON query_catalog(state);
     """,
 ]
 
@@ -871,6 +927,69 @@ class Store:
         ).fetchone()
         return _row_to(ContactRow, row) if row else None
 
+    def lead_contacts(self, lead_id: int) -> list[dict[str, Any]]:
+        """Return contacts for a lead as list of dicts (for hunt output)."""
+        rows = self._conn().execute(
+            "SELECT name, role, email, phone, source, confidence"
+            " FROM contacts WHERE lead_id = ? ORDER BY id", (lead_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def followups_due(self) -> list[Any]:
+        """Return follow-ups that are due (not completed, due_date <= today)."""
+        from datetime import date
+        today = date.today().isoformat()
+        rows = self._conn().execute(
+            "SELECT * FROM follow_ups"
+            " WHERE completed = 0 AND (due_date IS NULL OR due_date <= ?)"
+            " ORDER BY due_date ASC LIMIT 10",
+            (today,),
+        ).fetchall()
+        return [_row_to(FollowUpRow, r) for r in rows]
+
+    def quotes_pending(self) -> list[dict[str, Any]]:
+        """Return quotes in draft or sent state."""
+        rows = self._conn().execute(
+            "SELECT * FROM quotes WHERE state IN ('draft', 'sent')"
+            " ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_followup(
+        self,
+        lead_id: int,
+        *,
+        kind: str,
+        due_date: str | None = None,
+        reason: str | None = None,
+        recommended_action: str | None = None,
+    ) -> int:
+        """Insert a follow-up (used by tests and manual creation)."""
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO follow_ups (lead_id, kind, due_date, reason,"
+                " recommended_action, created_at) VALUES (?,?,?,?,?,?)",
+                (lead_id, kind, due_date, reason, recommended_action, _utcnow()),
+            )
+            return int(cur.lastrowid)
+
+    def add_quote(
+        self,
+        lead_id: int,
+        *,
+        service_id: str,
+        state: str = "draft",
+        scope: str | None = None,
+    ) -> int:
+        """Insert a quote (used by tests and manual creation)."""
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO quotes (lead_id, service_id, scope, state, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (lead_id, service_id, scope, state, _utcnow()),
+            )
+            return int(cur.lastrowid)
+
     # -- interactions -----------------------------------------------------------
 
     def add_interaction(
@@ -1128,6 +1247,22 @@ class Store:
             self.audit(conn, actor="agent", action="campaign.run",
                        entity_type="campaign", entity_id=campaign_id,
                        payload={"results": results, "leads": lead_ids})
+        # Update query catalog for learning (§27-§30)
+        for qs in (query_stats or []):
+            self.update_query_catalog(
+                query=str(qs.get("query", ""))[:200],
+                service=qs.get("service"),
+                source=str(qs.get("source", ""))[:60],
+                candidates=int(qs.get("candidates", 0)),
+                researched=int(qs.get("researched", 0)),
+                qualified=int(qs.get("qualified", 0)),
+                contactable=int(qs.get("contactable", 0)),
+                contacted=int(qs.get("contacted", 0)),
+                replies=int(qs.get("replies", 0)),
+                positive=int(qs.get("positive", 0)),
+                quotes=int(qs.get("quotes", 0)),
+                won=int(qs.get("won", 0)),
+            )
 
     def source_quality(self) -> list[dict[str, Any]]:
         """Per-source funnel: candidates → researched → qualified → contactable.
@@ -1148,6 +1283,406 @@ class Store:
             " FROM query_stats GROUP BY query ORDER BY qualified DESC, researched DESC"
             " LIMIT ?", (int(limit),)).fetchall()
         return [dict(r) for r in rows]
+
+    # -- query catalog: learning and selection (§27-§30) ------------------------
+
+    def update_query_catalog(
+        self,
+        *,
+        query: str,
+        service: str | None = None,
+        source: str = "unknown",
+        candidates: int = 0,
+        researched: int = 0,
+        qualified: int = 0,
+        contactable: int = 0,
+        contacted: int = 0,
+        replies: int = 0,
+        positive: int = 0,
+        quotes: int = 0,
+        won: int = 0,
+    ) -> None:
+        """Update the query_catalog after a campaign run. Accumulates stats
+        and automatically transitions states based on outcome thresholds.
+
+        State rules (conservative, §4):
+        - NEW: just created, insufficient data
+        - ACTIVE: has been run at least once
+        - PROMISING: produces qualified or strong/intent leads
+        - WEAK: many runs with few qualified outcomes
+        - RETIRED: consistently poor performance with sufficient sample
+        """
+        now = _utcnow()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM query_catalog WHERE query = ? AND service IS ? AND source = ?",
+                (query, service, source)).fetchone()
+
+            if row:
+                r = dict(row)
+                new_runs = r["runs"] + 1
+                new_candidates = r["total_candidates"] + candidates
+                new_researched = r["total_researched"] + researched
+                new_qualified = r["total_qualified"] + qualified
+                new_contactable = r["total_contactable"] + contactable
+                new_contacted = r["total_contacted"] + contacted
+                new_replies = r["total_replies"] + replies
+                new_positive = r["total_positive"] + positive
+                new_quotes = r["total_quotes"] + quotes
+                new_won = r["total_won"] + won
+
+                # State transitions based on cumulative performance
+                state = r["state"]
+                if state == "retired":
+                    pass  # retired stays retired
+                elif new_won > 0 or new_positive > 0:
+                    state = "promising"
+                elif new_qualified > 0:
+                    state = "promising"
+                elif new_runs >= 3 and new_qualified == 0 and new_candidates > 20:
+                    state = "weak"
+                elif new_runs >= 1:
+                    state = "active"
+
+                conn.execute(
+                    "UPDATE query_catalog SET runs = ?, total_candidates = ?,"
+                    " total_researched = ?, total_qualified = ?,"
+                    " total_contactable = ?, total_contacted = ?,"
+                    " total_replies = ?, total_positive = ?,"
+                    " total_quotes = ?, total_won = ?,"
+                    " state = ?, last_run_at = ?"
+                    " WHERE id = ?",
+                    (new_runs, new_candidates, new_researched, new_qualified,
+                     new_contactable, new_contacted, new_replies, new_positive,
+                     new_quotes, new_won, state, now, r["id"]))
+            else:
+                # Determine initial state
+                state = "new"
+                if qualified > 0 or positive > 0 or won > 0:
+                    state = "promising"
+                elif candidates > 0:
+                    state = "active"
+
+                conn.execute(
+                    "INSERT INTO query_catalog"
+                    " (query, service, source, state, runs,"
+                    "  total_candidates, total_researched, total_qualified,"
+                    "  total_contactable, total_contacted,"
+                    "  total_replies, total_positive, total_quotes, total_won,"
+                    "  last_run_at, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (query, service, source, state, 1,
+                     candidates, researched, qualified,
+                     contactable, contacted,
+                     replies, positive, quotes, won,
+                     now, now))
+
+    def query_catalog_entries(self, *, state: str | None = None,
+                              limit: int = 50) -> list[dict[str, Any]]:
+        """List query catalog entries, ordered by quality then sample size."""
+        conn = self._conn()
+        q = "SELECT * FROM query_catalog"
+        params: list[Any] = []
+        if state:
+            q += " WHERE state = ?"
+            params.append(state)
+        q += " ORDER BY total_qualified DESC, total_won DESC, total_candidates DESC"
+        if limit:
+            q += " LIMIT ?"
+            params.append(int(limit))
+        return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+    def best_queries_for_next_campaign(
+        self,
+        *,
+        exploration_pct: int = 20,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Select queries for the next campaign using exploration + exploitation.
+
+        Strategy (§5):
+        - 80% exploitation: promising/active queries ranked by quality
+        - 20% exploration: new/weak queries with insufficient data
+
+        Quality ranking uses: qualified > won > contacted > candidates.
+        Never retires queries with insufficient sample (runs < 3).
+        """
+        conn = self._conn()
+
+        # Exploitation: promising + active queries, ranked by quality
+        exploit = conn.execute(
+            "SELECT * FROM query_catalog"
+            " WHERE state IN ('promising', 'active')"
+            " ORDER BY total_qualified DESC, total_won DESC, total_researched DESC"
+            " LIMIT ?", (int(limit * (100 - exploration_pct) / 100),)).fetchall()
+
+        # Exploration: new + weak queries (insufficient sample or low quality)
+        explore = conn.execute(
+            "SELECT * FROM query_catalog"
+            " WHERE state IN ('new', 'weak')"
+            " ORDER BY runs ASC, total_candidates DESC"
+            " LIMIT ?", (int(limit * exploration_pct / 100),)).fetchall()
+
+        result = [dict(r) for r in exploit] + [dict(r) for r in explore]
+        return result[:limit]
+
+    def retire_query(self, query_id: int) -> None:
+        """Manually retire a query. Only allowed with sufficient sample."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT id, runs, total_qualified FROM query_catalog WHERE id = ?",
+                (query_id,)).fetchone()
+            if not row:
+                raise ValueError(f"query {query_id} not found")
+            if row["runs"] < 3:
+                raise ValueError(
+                    f"query {query_id} has only {row['runs']} runs —"
+                    " need at least 3 before retirement")
+            conn.execute(
+                "UPDATE query_catalog SET state = 'retired' WHERE id = ?",
+                (query_id,))
+            self.audit(conn, actor="agent", action="query.retired",
+                       entity_type="query_catalog", entity_id=query_id,
+                       payload={"runs": row["runs"],
+                                "qualified": row["total_qualified"]})
+
+    # -- opportunities (intent engine §9-§11, §19) --------------------------------
+
+    _OPPORTUNITY_STATES = (
+        "discovered", "researched", "qualified", "approval_required",
+        "approved", "contacted", "replied", "quoted", "won", "lost",
+        "expired", "dismissed",
+    )
+
+    def add_opportunity(
+        self,
+        *,
+        source_url: str,
+        source_type: str,
+        title: str,
+        intent_tier: str,
+        intent_score: int,
+        service_fit: str | None,
+        freshness: str,
+        published_at: str | None,
+        snippet: str | None = None,
+        company_label: str | None = None,
+        company_id: int | None = None,
+        dedup_key: str | None = None,
+        evidence: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, bool]:
+        """Insert an opportunity, dedup by (company, normalized intent, host).
+        Returns (id, created). On duplicate, the NEW source is merged into the
+        stored evidence (§19: never destroy evidence) and (id, False) returned.
+        Expired-by-date items are stored as 'expired' (§18)."""
+        import hashlib
+        import json as _json
+
+        key = dedup_key or f"{company_label}|{source_url}"
+        khash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+        now = _utcnow()
+        state = "expired" if is_expired(published_at) else "discovered"
+        with self.transaction() as conn:
+            existing = conn.execute(
+                "SELECT id, evidence_json FROM opportunities WHERE dedup_key = ?",
+                (khash,)).fetchone()
+            if existing:
+                merged = _json.loads(existing["evidence_json"] or "[]")
+                for e in (evidence or []):
+                    if e not in merged:
+                        merged.append(e)
+                conn.execute(
+                    "UPDATE opportunities SET evidence_json = ?, updated_at = ?"
+                    " WHERE id = ?", (_json.dumps(merged), now, existing["id"]))
+                self.audit(conn, actor="agent", action="opportunity.deduped",
+                           entity_type="opportunity", entity_id=existing["id"],
+                           payload={"source_url": source_url})
+                return int(existing["id"]), False
+            cur = conn.execute(
+                "INSERT INTO opportunities (company_id, lead_id, company_label,"
+                " source_url, source_type, published_at, title, snippet,"
+                " intent_tier, intent_score, service_fit, freshness, state,"
+                " dedup_key, evidence_json, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (company_id, None, company_label, source_url, source_type,
+                 published_at, title, snippet, intent_tier, int(intent_score),
+                 service_fit, freshness, state, khash,
+                 _json.dumps(evidence or []), now, now))
+            self.audit(conn, actor="agent", action="opportunity.add",
+                       entity_type="opportunity", entity_id=int(cur.lastrowid),
+                       payload={"tier": intent_tier, "service": service_fit,
+                                "source_type": source_type, "state": state})
+            return int(cur.lastrowid), True
+
+    def get_opportunity(self, opp_id: int) -> dict[str, Any] | None:
+        import json as _json
+        r = self._conn().execute(
+            "SELECT * FROM opportunities WHERE id = ?", (opp_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["evidence"] = _json.loads(d.pop("evidence_json") or "[]")
+        return d
+
+    def list_opportunities(
+        self, *, state: str | None = None,
+        include_expired: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Opportunities, hottest first: intent tier (explicit>strong>medium),
+        then freshness, then score. Expired hidden by default (§18)."""
+        tier_rank = "CASE intent_tier WHEN 'explicit' THEN 0 WHEN 'strong' THEN 1"
+        tier_rank += " WHEN 'medium' THEN 2 ELSE 3 END"
+        fresh_rank = "CASE freshness WHEN 'very_high' THEN 0 WHEN 'high' THEN 1"
+        fresh_rank += " WHEN 'medium' THEN 2 WHEN 'low' THEN 3 WHEN 'very_low'"
+        fresh_rank += " THEN 4 ELSE 5 END"
+        q = "SELECT * FROM opportunities"
+        conds, params = [], []
+        if state:
+            conds.append("state = ?")
+            params.append(state)
+        if not include_expired and not state:
+            conds.append("state != 'expired'")
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += f" ORDER BY {tier_rank}, {fresh_rank}, intent_score DESC, id"
+        rows = self._conn().execute(q, params).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d.pop("evidence_json", None)
+            out.append(d)
+        return out
+
+    def campaign_report(self) -> dict[str, Any]:
+        """Aggregate commercial funnel from stored campaign data.
+
+        Returns funnel counts, source_quality, query_quality, and
+        recommended next actions. No invented metrics: every number
+        comes from stored campaign_runs, query_stats, opportunities,
+        leads, interactions, quotes, and follow-ups.
+        """
+        conn = self._conn()
+
+        opps = self.list_opportunities(include_expired=True)
+        funnel: dict[str, int] = {
+            "candidates": 0,
+            "valid_companies": 0,
+            "opportunities": len(opps),
+            "explicit_intent": 0,
+            "strong": 0,
+            "medium": 0,
+            "qualified": 0,
+            "contactable": 0,
+            "contacted": 0,
+            "replies": 0,
+            "positive": 0,
+            "quotes": 0,
+            "won": 0,
+        }
+
+        for o in opps:
+            if o["intent_tier"] == "explicit":
+                funnel["explicit_intent"] += 1
+            elif o["intent_tier"] == "strong":
+                funnel["strong"] += 1
+            elif o["intent_tier"] == "medium":
+                funnel["medium"] += 1
+            if o.get("company_id") is not None or o.get("company_label"):
+                funnel["valid_companies"] += 1
+            if o.get("intent_score", 0) >= 60 or o["intent_tier"] in ("explicit", "strong"):
+                funnel["qualified"] += 1
+            if o.get("company_id") is not None and o["intent_tier"] in ("explicit", "strong"):
+                funnel["contactable"] += 1
+            if o.get("state") == "contacted":
+                funnel["contacted"] += 1
+            if o.get("state") == "replied":
+                funnel["replies"] += 1
+            if o.get("state") == "won":
+                funnel["won"] += 1
+            if o.get("state") == "quoted":
+                funnel["quotes"] += 1
+
+        leads = self.list_leads()
+        for lead in leads:
+            if lead.state == "replied":
+                funnel["replies"] += 1
+            if lead.state == "contacted":
+                funnel["contacted"] += 1
+            if lead.state == "approved":
+                funnel["contacted"] += 1
+            if lead.state == "negotiating":
+                funnel["positive"] += 1
+            if lead.state == "won":
+                funnel["won"] += 1
+
+        quotes = self.list_quotes()
+        funnel["quotes"] = len(quotes)
+        for q in quotes:
+            if q.state == "won":
+                funnel["won"] += 1
+
+        source_quality = self.source_quality()
+        for row in source_quality:
+            row["sample_size"] = row.get("candidates", 0)
+            row["qualified_rate"] = (
+                row["qualified"] / row["researched"] if row.get("researched", 0) > 0
+                else None
+            )
+            row["replies"] = row.get("replies", 0)
+
+        query_quality = self.query_quality(limit=10)
+        for row in query_quality:
+            row["sample_size"] = row.get("candidates", 0)
+            row["qualified_rate"] = (
+                row["qualified"] / row["researched"] if row.get("researched", 0) > 0
+                else None
+            )
+
+        recommended: list[dict[str, Any]] = []
+        for row in query_quality:
+            if row.get("qualified", 0) > 0:
+                recommended.append({
+                    "query": row["query"],
+                    "service": row.get("service"),
+                    "source": row.get("source"),
+                    "reason": f"produced {row['qualified']} qualified leads from {row['researched']} researched",
+                })
+
+        return {
+            "funnel": funnel,
+            "source_quality": source_quality,
+            "query_quality": query_quality,
+            "recommended": recommended,
+        }
+
+    def transition_opportunity(self, opp_id: int, to_state: str, *,
+                               actor: str = "agent",
+                               reason: str | None = None) -> None:
+        """Opportunity lifecycle transitions. HUMAN states (approval_required,
+        approved, contacted) require actor='human' and an approval record -
+        same discipline as leads: the LLM and generic code can never advance
+        a human-gated state."""
+        import json as _json
+        if to_state not in self._OPPORTUNITY_STATES:
+            raise ValueError(f"unknown opportunity state: {to_state!r}")
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT state FROM opportunities WHERE id = ?", (opp_id,)).fetchone()
+            if not row:
+                raise ValueError(f"opportunity {opp_id} not found")
+            frm = row["state"]
+            if frm == to_state:
+                return
+            human_gated = to_state in ("approval_required", "approved", "contacted")
+            if human_gated and actor != "human":
+                raise ValueError(
+                    f"opportunity transition {frm} -> {to_state} is HUMAN-gated")
+            conn.execute(
+                "UPDATE opportunities SET state = ?, updated_at = ? WHERE id = ?",
+                (to_state, _utcnow(), opp_id))
+            self.audit(conn, actor=actor, action="opportunity.transition",
+                       entity_type="opportunity", entity_id=opp_id,
+                       payload={"from": frm, "to": to_state, "reason": reason})
 
     def next_lead(self) -> dict[str, Any] | None:
         """Find the highest-priority lead needing action today.

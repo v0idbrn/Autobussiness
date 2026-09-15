@@ -1,0 +1,71 @@
+# Seed queries for BAM bootstrap (cold-start)
+# Organized by service. Each entry: (language, query_text)
+# These produce immediate search results when the query_catalog is empty.
+
+pdf_to_excel:
+  en:
+    - '"need help" converting PDF invoices to Excel'
+    - 'looking for "PDF to Excel" automation service'
+    - '"convert PDF" spreadsheet data entry contractor'
+    - 'hire "PDF extraction" Excel formatting freelancer'
+    - '"invoice processing" Excel automation need'
+    - 'automate "PDF data entry" to spreadsheet'
+    - '"need someone" convert PDF tables to Excel'
+    - 'outsourcing "PDF to spreadsheet" conversion'
+    - '"looking for" someone to extract PDF data to Excel'
+    - 'hiring "document conversion" PDF Excel specialist'
+  es:
+    - 'buscamos "procesamiento de facturas" OR "PDF a Excel"'
+    - 'necesitamos "conversión de PDF" a hojas de cálculo'
+    - 'contratar "extracción de datos" PDF a Excel'
+    - 'automatizar "entrada de datos" PDF a hoja de cálculo'
+
+excel_cleaning:
+  en:
+    - '"need help" cleaning up Excel spreadsheet data'
+    - 'looking for "data cleaning" Excel contractor'
+    - '"clean messy" Excel data freelancer needed'
+    - 'hire "data normalization" Excel spreadsheet specialist'
+    - '"data cleanup" Excel formatting service needed'
+    - 'need "Excel data" cleanup and standardization'
+    - '"looking for" someone to clean messy Excel files'
+    - 'outsourcing "data cleaning" Excel spreadsheet'
+    - 'hiring "spreadsheet cleanup" data entry specialist'
+    - '"need expert" to clean and organize Excel data'
+  es:
+    - 'necesitamos "limpieza de datos" OR "limpiar excel"'
+    - 'buscamos "limpieza de hojas de cálculo" Excel'
+    - 'contratar "normalización de datos" Excel'
+
+qa_automation:
+  en:
+    - '"looking for" QA automation contractor website testing'
+    - 'hire "QA automation" tester website freelance'
+    - '"need QA" automation testing website contractor'
+    - 'looking for "Selenium" OR "Playwright" automation tester'
+    - '"automation testing" website QA freelancer needed'
+    - 'hire "test automation" engineer website project'
+    - '"need someone" automate website testing QA'
+    - 'outsourcing "QA automation" website regression testing'
+    - 'hiring "software tester" automation specialist'
+    - '"looking for" QA engineer to automate website tests'
+  es:
+    - 'buscamos "automatización de pruebas" OR "testing" freelance'
+    - 'contratar "QA automation" tester freelance'
+    - 'necesitamos "automatización de pruebas" web'
+
+# Generic intent phrases (work with any service)
+generic:
+  en:
+    - '"need help" with data processing automation'
+    - 'looking for "freelance" data entry specialist'
+    - '"need someone" to automate repetitive tasks'
+    - 'hire "virtual assistant" data processing'
+    - '"looking for" contractor to clean up spreadsheets'
+    - 'need "automation" for business documents'
+    - '"outsourcing" data entry and formatting work'
+    - 'hiring "freelance" for document processing project'
+  es:
+    - 'necesitamos "ayuda" con procesamiento de datos'
+    - 'buscamos "freelance" entrada de datos'
+    - 'contratar "asistente virtual" procesamiento datos'

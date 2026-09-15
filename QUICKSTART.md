@@ -17,15 +17,59 @@ service pdf-to-excel  : ok
 service excel-cleaner : ok
 ```
 
-## Step 2: Find Companies
+## Step 2: Seed Queries (First Time Only)
+
+```bash
+# Seed the query catalog with proven search phrases
+uv run bam bootstrap
+
+# Or seed for a specific service
+uv run bam bootstrap --service pdf_to_excel
+
+# Import leads from a CSV file
+uv run bam bootstrap --import-csv leads.csv
+
+# Preview without writing
+uv run bam bootstrap --dry-run
+```
+
+The bootstrap seeds 51 queries across all services. This gives `bam hunt`
+immediate search terms on first run.
+
+## Step 3: Daily Hunt (Recommended)
+
+```bash
+# One command: discover → research → qualify → opportunities
+uv run bam hunt
+
+# Specific service:
+uv run bam hunt --service pdf_to_excel
+
+# Multiple services:
+uv run bam hunt --service pdf_to_excel excel_cleaning
+```
+
+`bam hunt` automatically:
+- Selects best queries from learning history (or seed queries on cold start)
+- Discovers candidates from job boards + remote boards + news RSS
+- Researches top candidates (fetches pages, extracts signals)
+- Creates opportunities with intent scoring
+- Shows top 5 opportunities with WHY, CONTACT, OFFER, ACTION
+
+## Step 4: Manual Discovery (Alternative)
 
 ```bash
 # From a news search (finds real companies from RSS results)
 uv run bam discover --source rss --query "accounting firms" --limit 10
 
-# Better: a commercial campaign against a directory you curated yourself
-uv run bam discover --campaign pdf_to_excel \
-    --directory "https://<directory-or-association-page>" --per-query 5
+# Find PUBLIC EXPRESSIONS OF NEED (hiring posts, help requests)
+uv run bam discover --intent --campaign pdf_to_excel --limit 10
+
+# Custom intent query (finds people asking for specific help)
+uv run bam discover --intent --intent-query "help converting PDF to Excel"
+
+# Mine a curated directory for leads (weak/medium intent — proves existence, not need)
+uv run bam discover --intent --directory "https://<directory-url>" --limit 10
 
 # From a list of URLs
 uv run bam discover --urls https://acme.test https://beta.test
@@ -34,7 +78,8 @@ uv run bam discover --urls https://acme.test https://beta.test
 uv run bam discover --csv companies.csv
 ```
 
-Denylisted domains are filtered automatically.
+Denylisted domains are filtered automatically. Directory companies get LEAD
+SIGNAL (existence proof), not automatic commercial intent.
 
 ## Step 3: Research a Prospect
 
@@ -52,8 +97,14 @@ evidence; claims record which page they came from.
 # See all leads
 uv run bam leads
 
-# What should I do next?
+# What should I do next? (HOT OPPORTUNITIES → CONTACT-READY → FOLLOW-UPS)
 uv run bam next
+
+# See all open opportunities (explicit > strong > medium, by freshness)
+uv run bam opportunities
+
+# Campaign funnel + source/query quality
+uv run bam campaign-report
 
 # Approve outreach (HUMAN decision)
 uv run bam approve-contact 1 -y

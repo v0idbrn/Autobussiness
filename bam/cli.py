@@ -11,6 +11,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _header_safe(value: str) -> str:
@@ -127,6 +128,38 @@ def build_parser() -> argparse.ArgumentParser:
     disc.add_argument("--directory", action="append", default=[], metavar="URL",
                       help="curated directory/association/member-list page to mine "
                            "(campaign mode; repeatable)")
+    disc.add_argument("--intent", action="store_true", dest="intent",
+                      help="intent discovery: find PUBLIC EXPRESSIONS OF NEED "
+                           "(requests for help, hiring signals) instead of companies")
+    disc.add_argument("--intent-query", action="append", default=[], metavar="Q",
+                      help="custom intent query (repeatable; implies --intent)")
+
+    # opportunities
+    opps = sub.add_parser("opportunities", help="list discovered commercial-intent opportunities")
+    opps.add_argument("--state", default=None, help="filter by lifecycle state")
+    opps.add_argument("--all", action="store_true", help="include expired")
+    opp1 = sub.add_parser("opportunity", help="show one opportunity brief")
+    opp1.add_argument("id", type=int)
+    oppd = sub.add_parser("opportunity-dismiss", help="mark an opportunity as not worth pursuing")
+    oppd.add_argument("id", type=int)
+    oppx = sub.add_parser("opportunity-expire", help="mark an opportunity as expired (manual override)")
+    oppx.add_argument("id", type=int)
+    cr = sub.add_parser("campaign-report", help="aggregate commercial funnel from stored campaign data")
+    cr.add_argument("--json", action="store_true", help="output machine-readable JSON")
+
+    # hunt — daily sales orchestration
+    ht = sub.add_parser("hunt", help="daily sales orchestration: discover → research → qualify → opportunities")
+    ht.add_argument("--service", choices=["pdf_to_excel", "excel_cleaning", "qa_automation"],
+                     nargs="*", default=None,
+                     help="services to hunt for (default: all active from query catalog)")
+    ht.add_argument("--market", default=None,
+                     help="market to focus on (default: worldwide)")
+    ht.add_argument("--max-candidates", type=int, default=None,
+                     help="max candidates to discover (default: config.sales.hunt.max_candidates)")
+    ht.add_argument("--max-research", type=int, default=None,
+                     help="max candidates to research (default: config.sales.hunt.max_research)")
+    ht.add_argument("--top", type=int, default=None,
+                     help="top opportunities to show (default: config.sales.hunt.top_opportunities)")
 
     # ingest
     ing = sub.add_parser("ingest", help="ingest discovered companies into the pipeline")
@@ -194,6 +227,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     # clients
     sub.add_parser("clients", help="list clients")
+
+    # bootstrap
+    bs = sub.add_parser("bootstrap", help="seed query catalog + import bootstrap data")
+    bs.add_argument("--service", default=None,
+                    choices=["pdf_to_excel", "excel_cleaning", "qa_automation"],
+                    help="seed queries for a specific service (default: all)")
+    bs.add_argument("--import-csv", default=None,
+                    help="import leads from a CSV file (columns: company, url, title, snippet)")
+    bs.add_argument("--import-json", default=None,
+                    help="import leads from a JSON file (list of objects with company, url, etc.)")
+    bs.add_argument("--dry-run", action="store_true",
+                    help="show what would be imported without writing")
 
     return p
 
@@ -459,6 +504,585 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         # --- NEW COMMERCIAL COMMANDS ---
+
+        if args.command == "discover" and (getattr(args, "intent", False)
+                                           or getattr(args, "intent_query", None)):
+            # ---- INTENT DISCOVERY (intent engine §2, §6, §25, §27) -------
+            # Finds public EXPRESSIONS OF NEED, not companies. Failure of
+            # one feed never kills the run; results are persisted as
+            # opportunities with full source evidence (§7).
+            from bam.intent import freshness as _freshness, age_days_from
+            from bam.intent import deduplicate_candidates
+            from bam.intent_sources import discover_intent_from_feeds
+
+            cfg = load_config()
+            dlim = (cfg.raw.get("discovery") or {})
+            max_opp = int(dlim.get("max_candidates", 50))
+            store = _store()
+            services = list(args.campaign) if getattr(args, "campaign", None) else None
+            dirs = getattr(args, "directory", []) or []
+            candidates, failures = discover_intent_from_feeds(
+                queries=list(args.intent_query or []),
+                services=services,
+                directories=dirs if dirs else None,
+                limit_per_query=max(1, args.per_query))
+            candidates = deduplicate_candidates(candidates)[:max_opp]
+            # denylist applies to intent too (rule 10)
+            from bam.denylist import Denylist as _DL
+            allowed: list = []
+            denied_n = 0
+            for c in candidates:
+                # attribution is conservative: no company yet, so denylist
+                # checks the source domain only
+                host = urlparse(c.source_url).netloc.lower()
+                if _DL.load().check(domain=host):
+                    denied_n += 1
+                    continue
+                allowed.append(c)
+            stored = []
+            for c in allowed:
+                age = age_days_from(c.published_at)
+                oid, _created = store.add_opportunity(
+                    source_url=c.source_url, source_type=c.source_type,
+                    title=c.title, intent_tier=c.intent.tier,
+                    intent_score=c.intent.score, service_fit=c.intent.service,
+                    freshness=_freshness(age), published_at=c.published_at,
+                    snippet=c.snippet, dedup_key="|".join(
+                        p or "" for p in c.dedup_key),
+                    evidence=c.evidence)
+                stored.append((oid, c))
+            print("INTENT DISCOVERY")
+            print("=" * 60)
+            print(f"OPPORTUNITIES: {len(stored)}"
+                  + (f"  (denylisted: {denied_n})" if denied_n else ""))
+            if failures:
+                print(f"Sources skipped: {len(failures)} (blocked or failed - continued)")
+            for oid, c in stored:
+                age = age_days_from(c.published_at)
+                print(f"\n  #{oid} [{c.intent.tier.upper()}] "
+                      f"{(c.intent.service or 'unknown service').replace('_', ' ')}"
+                      + (f"  (posted {age}d ago)" if age is not None else ""))
+                print(f"    {c.title[:100]}")
+                print(f"    source: {c.source_url}")
+            if not stored:
+                print("\nNo strong intent found in this run - that is an honest")
+                print("empty result, not an error. Try --intent-query with")
+                print("more specific need phrases.")
+            print("\nDetails:  bam opportunity <id>     List: bam opportunities")
+            return 0
+
+        if args.command == "opportunities":
+            store = _store()
+            opps = store.list_opportunities(
+                state=args.state, include_expired=args.all)
+            print("OPPORTUNITIES" if opps else "No opportunities yet."
+                  " Run: bam discover --intent")
+            print("=" * 60)
+            for o in opps:
+                print(f"\n  #{o['id']} [{o['intent_tier'].upper()}] "
+                      f"{(o['service_fit'] or 'unknown').replace('_', ' ')}"
+                      f"  STATE: {o['state']}  FRESHNESS: {o['freshness']}")
+                print(f"    {o['title'][:100]}")
+                print(f"    source: {o['source_url']}")
+            return 0
+
+        if args.command == "opportunity":
+            from bam.copilot import OFFERS
+
+            store = _store()
+            o = store.get_opportunity(args.id)
+            if not o:
+                print(f"opportunity {args.id} not found", file=sys.stderr)
+                return 2
+            print("OPPORTUNITY")
+            print("=" * 60)
+            print(f"Company:      {o['company_label'] or 'Not attributed yet'}")
+            print(f"Intent:       {o['intent_tier'].upper()} "
+                  f"(strength {o['intent_score']})")
+            print(f"What they need (observed):")
+            print(f"  {o['title']}")
+            if o["snippet"]:
+                print(f"  {o['snippet'][:220]}")
+            offer = OFFERS.get(o["service_fit"] or "")
+            print(f"Why we fit:   deterministic intent match on "
+                  f"{(o['service_fit'] or 'unknown').replace('_', ' ')}")
+            if offer:
+                print(f"Sell:         {offer['name']} - {offer['evidence_phrase']}")
+            print(f"Freshness:    {o['freshness']}"
+                  + (f"  (published {o['published_at'][:10]})"
+                     if o["published_at"] else "  (date unknown)"))
+            print(f"Source:       {o['source_url']}")
+            print(f"State:        {o['state']}")
+            if o["state"] == "discovered":
+                if o["intent_tier"] in ("explicit", "strong"):
+                    print("Action:       RESEARCH the company, then draft outreach.")
+                else:
+                    print("Action:       RESEARCH MORE before any contact.")
+            print("Evidence:")
+            for e in o["evidence"][:6]:
+                print(f"  - [{e.get('status', '?')}] {e.get('kind', '?')}: "
+                      f"{(e.get('excerpt') or '')[:90]}")
+                print(f"    {e.get('url', '')}")
+            return 0
+
+        if args.command == "opportunity-dismiss":
+            store = _store()
+            try:
+                store.transition_opportunity(args.id, "dismissed", actor="human",
+                                             reason="operator dismissed")
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(f"opportunity {args.id}: dismissed")
+            return 0
+
+        if args.command == "opportunity-expire":
+            store = _store()
+            try:
+                store.transition_opportunity(args.id, "expired", actor="human",
+                                             reason="manual override (§18)")
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(f"opportunity {args.id}: expired")
+            return 0
+
+        if args.command == "campaign-report":
+            store = _store()
+            report = store.campaign_report()
+            if getattr(args, "json", False):
+                import json
+                print(json.dumps(report, indent=2, default=str))
+                return 0
+
+            funnel = report["funnel"]
+            sq = report["source_quality"]
+            qq = report["query_quality"]
+            rec = report["recommended"]
+
+            print("CAMPAIGN REPORT")
+            print("=" * 60)
+            print(f"Candidates:       {funnel['candidates']}")
+            print(f"Valid companies:  {funnel['valid_companies']}")
+            print(f"Opportunities:    {funnel['opportunities']}")
+            print(f"  Explicit intent:{funnel['explicit_intent']}")
+            print(f"  Strong:         {funnel['strong']}")
+            print(f"  Medium:         {funnel['medium']}")
+            print(f"Qualified:        {funnel['qualified']}")
+            print(f"Contactable:      {funnel['contactable']}")
+            print(f"Contacted:        {funnel['contacted']}")
+            print(f"Replies:          {funnel['replies']}")
+            print(f"Positive:         {funnel['positive']}")
+            print(f"Quotes:           {funnel['quotes']}")
+            print(f"Won:              {funnel['won']}")
+
+            if sq:
+                print("\nSOURCE QUALITY")
+                print("=" * 60)
+                print(f"{'source':<25s} {'candidates':>10s} {'qualified':>10s}"
+                      f" {'contacted':>10s} {'sample':>8s}")
+                for row in sq:
+                    src = row.get("source", "?")
+                    cans = row.get("candidates", 0)
+                    qual = row.get("qualified", 0)
+                    cont = row.get("contacted", 0)
+                    sample = row.get("sample_size", 0)
+                    print(f"  {src:<23s} {cans:>10d} {qual:>10d}"
+                          f" {cont:>10d} {sample:>8d}")
+                    if sample < 5:
+                        print(f"    (insufficient sample — no rate conclusions)")
+
+            if qq:
+                print("\nQUERY QUALITY")
+                print("=" * 60)
+                print(f"{'query':<45s} {'svc':<18s} {'res':>5s} {'qual':>5s}")
+                for row in qq:
+                    q = (row.get("query") or "?")[:44]
+                    svc = (row.get("service") or "-")[:17]
+                    res = row.get("researched", 0)
+                    qual = row.get("qualified", 0)
+                    print(f"  {q:<43s} {svc:<16s} {res:>5d} {qual:>5d}")
+
+            if rec:
+                print("\nRECOMMENDED NEXT ACTIONS")
+                print("=" * 60)
+                for r in rec[:5]:
+                    print(f"  query: {r['query'][:50]}")
+                    print(f"  service: {(r.get('service') or '?')}")
+                    print(f"  source: {(r.get('source') or '?')}")
+                    print(f"  reason: {r['reason']}")
+                    print()
+
+            if not sq and not qq and not rec:
+                print("\nNo campaign data yet. Run:")
+                print("  bam discover --intent")
+                print("  bam discover --campaign <service>")
+
+            return 0
+
+        if args.command == "hunt":
+            import time as _time
+            from bam.store import Store
+            from bam.intent_sources import discover_intent_from_feeds
+            from bam.intent import (
+                deduplicate_candidates, freshness as _freshness,
+                age_days_from, is_expired,
+            )
+            from bam.denylist import Denylist as _DL
+
+            _t0 = _time.time()
+            cfg = load_config()
+            store = _store()
+
+            # -- resolve config knobs -------------------------------------------------
+            hunt_cfg = ((cfg.raw.get("sales") or {}).get("hunt") or {})
+            max_candidates = (getattr(args, "max_candidates", None)
+                              or int(hunt_cfg.get("max_candidates", 30)))
+            max_research = (getattr(args, "max_research", None)
+                            or int(hunt_cfg.get("max_research", 15)))
+            top_n = (getattr(args, "top", None)
+                     or int(hunt_cfg.get("top_opportunities", 5)))
+            max_contacts = int(hunt_cfg.get("max_contacts", 10))
+
+            # -- resolve services ------------------------------------------------------
+            services = getattr(args, "service", None)
+            if not services:
+                # default: all three services
+                services = ["pdf_to_excel", "excel_cleaning", "qa_automation"]
+
+            # -- 1. select queries -----------------------------------------------------
+            best = store.best_queries_for_next_campaign(limit=10)
+            selected_queries = [b["query"] for b in best if b.get("query")]
+
+            # Cold start: if no learned queries yet, use seed queries
+            if not selected_queries:
+                import yaml
+                seed_path = Path(__file__).parent.parent / "data" / "bootstrap" / "seed_queries.yaml"
+                if seed_path.exists():
+                    with open(seed_path, "r", encoding="utf-8") as f:
+                        seed_data = yaml.safe_load(f)
+                    for svc in services:
+                        svc_queries = seed_data.get(svc, {}).get("en", [])
+                        selected_queries.extend(svc_queries[:3])
+                    if selected_queries:
+                        print(f"  Using {len(selected_queries)} seed queries (cold start)")
+
+            # -- 2. start campaign -----------------------------------------------------
+            campaign_id = store.start_campaign(
+                services=services,
+                sources=["job_board_rss", "wwrss", "remoteok", "jobicy", "news_rss"],
+                markets=[args.market] if args.market else None,
+                queries=selected_queries,
+                limits={"max_candidates": max_candidates,
+                        "max_research": max_research,
+                        "top_opportunities": top_n},
+            )
+
+            # -- 3. discover intent candidates -----------------------------------------
+            print("HUNT — DISCOVERING...")
+            candidates, failures = discover_intent_from_feeds(
+                queries=selected_queries or None,
+                services=services,
+                limit_per_query=max(1, max_candidates // max(1, len(services))),
+            )
+
+            # -- 4. dedup --------------------------------------------------------------
+            candidates = deduplicate_candidates(candidates)
+
+            # -- 5. filter (denylist) --------------------------------------------------
+            filtered = []
+            _denylist = _DL.load()
+            for c in candidates:
+                domain = ""
+                if c.company_url:
+                    from urllib.parse import urlparse
+                    try:
+                        domain = urlparse(c.company_url).hostname or ""
+                    except Exception:
+                        pass
+                if domain and _denylist.check(domain=domain):
+                    continue
+                if not is_expired(c.published_at):
+                    filtered.append(c)
+            candidates = filtered[:max_candidates]
+
+            # -- 6. research candidates ------------------------------------------------
+            print(f"  {len(candidates)} candidates after dedup/filter")
+            researched = []
+            for c in candidates[:max_research]:
+                url = c.company_url or c.source_url
+                if not url:
+                    continue
+                try:
+                    from bam.pipeline import research as _research
+                    res = _research(url, store=store)
+                    lead = store.get_lead(res.lead_id) if res.lead_id else None
+                    if lead:
+                        researched.append((c, lead))
+                except Exception:
+                    continue  # skip candidate on any failure
+
+            print(f"  {len(researched)} researched")
+
+            # -- 7. qualify + create opportunities -------------------------------------
+            opportunities = []
+            for c, lead in researched:
+                # intent already scored by intent engine
+                tier = c.intent.tier
+                score = c.intent.score
+                service = c.intent.service or (services[0] if services else None)
+
+                # qualify: explicit/strong always qualify; medium needs score >= 60
+                if tier in ("explicit", "strong") or (tier == "medium" and score >= 60):
+                    oid, created = store.add_opportunity(
+                        source_url=c.source_url,
+                        source_type=c.source_type,
+                        title=c.title,
+                        intent_tier=tier,
+                        intent_score=score,
+                        service_fit=service,
+                        freshness=_freshness(age_days_from(c.published_at)),
+                        published_at=c.published_at,
+                        snippet=c.snippet,
+                        company_label=c.company,
+                        dedup_key=f"{c.company or ''}|{c.title}|{c.source_url}",
+                        evidence=c.evidence,
+                    )
+                    if created:
+                        # attach lead_id for contact research
+                        opportunities.append({
+                            "opportunity_id": oid,
+                            "candidate": c,
+                            "lead": lead,
+                            "tier": tier,
+                            "score": score,
+                            "service": service,
+                        })
+
+            print(f"  {len(opportunities)} opportunities created")
+
+            # -- 8. contact research for top opportunities ----------------------------
+            contacts_found = 0
+            for opp in opportunities[:max_contacts]:
+                lead = opp["lead"]
+                base_url = getattr(lead, "domain", None) or ""
+                if not base_url:
+                    continue
+                if not base_url.startswith("http"):
+                    base_url = f"https://{base_url}"
+                try:
+                    from bam.contacts import discover_contacts_for_lead
+                    contacts = discover_contacts_for_lead(base_url)
+                    for ct in contacts[:3]:
+                        if ct.email or ct.phone:
+                            store.add_contact(
+                                lead_id=lead.id,
+                                name=ct.name,
+                                role=ct.role,
+                                email=ct.email,
+                                phone=ct.phone,
+                                source=ct.source,
+                                confidence=ct.confidence,
+                            )
+                            contacts_found += 1
+                except Exception:
+                    continue
+
+            print(f"  {contacts_found} contacts found")
+
+            # -- 9. build sales briefs for top opportunities ---------------------------
+            for opp in opportunities[:top_n]:
+                lead = opp["lead"]
+                try:
+                    from bam.commercial import generate_sales_brief
+                    from dataclasses import asdict
+                    lead_dict = asdict(lead) if hasattr(lead, "__dataclass_fields__") else dict(lead)
+                    brief = generate_sales_brief(
+                        lead_data=lead_dict,
+                        evidence=[],
+                        claims=[],
+                        signals={},
+                    )
+                    opp["brief"] = brief
+                except Exception:
+                    opp["brief"] = None
+
+            # -- 10. rank and select top -----------------------------------------------
+            opportunities.sort(
+                key=lambda o: (
+                    {"explicit": 0, "strong": 1, "medium": 2, "weak": 3, "none": 4}
+                    .get(o["tier"], 5),
+                    -o["score"],
+                ),
+            )
+            top_opps = opportunities[:top_n]
+
+            # -- 11. follow-ups due ----------------------------------------------------
+            due_followups = store.followups_due()
+
+            # -- 12. quotes pending ----------------------------------------------------
+            pending_quotes = store.quotes_pending()
+
+            # -- 13. finish campaign ---------------------------------------------------
+            _elapsed = _time.time() - _t0
+            store.finish_campaign(
+                campaign_id,
+                results={
+                    "candidates": len(candidates),
+                    "researched": len(researched),
+                    "qualified": len(opportunities),
+                    "opportunities": len(opportunities),
+                    "contacts": contacts_found,
+                    "failures": len(failures),
+                    "elapsed_s": round(_elapsed, 1),
+                },
+                lead_ids=[o[1].id for o in researched if hasattr(o[1], "id")],
+                query_stats=[
+                    {"query": q, "source": "hunt", "service": services[0] if services else None,
+                     "candidates": len(candidates), "researched": len(researched),
+                     "qualified": len(opportunities)}
+                    for q in (selected_queries[:1] or ["(hunt)"])
+                ],
+            )
+
+            # -- 14. output ------------------------------------------------------------
+            print()
+            print("━" * 60)
+            print("BAM HUNT — DAILY SALES")
+            print("━" * 60)
+            print(f"Campaign: #{campaign_id}")
+            print(f"Services: {', '.join(s.replace('_', ' ').title() for s in services)}")
+            if args.market:
+                print(f"Market: {args.market}")
+            print()
+            print("Research:")
+            print(f"  Candidates:  {len(candidates)}")
+            print(f"  Researched:  {len(researched)}")
+            print(f"  Qualified:   {len(opportunities)}")
+            print(f"  Contacts:    {contacts_found}")
+            print(f"  Failures:    {len(failures)}")
+            print(f"  Duration:    {_elapsed:.0f}s")
+
+            # Source quality stats
+            src_quality = store.source_quality()
+            if src_quality:
+                print()
+                print("Source Quality:")
+                for sq in src_quality[:5]:
+                    name = sq.get("source", "?")
+                    qual = sq.get("qualified", 0)
+                    resp = sq.get("contactable", 0)
+                    print(f"  {name}: {qual} qualified, {resp} contactable")
+
+            if top_opps:
+                print()
+                print("━" * 60)
+                print("TOP OPPORTUNITIES")
+                print("━" * 60)
+                for i, opp in enumerate(top_opps, 1):
+                    c = opp["candidate"]
+                    lead = opp["lead"]
+                    brief = opp.get("brief")
+                    from bam.signals import OFFERS, recommend_offer
+                    offer = recommend_offer(opp["service"])
+
+                    print(f"\n#{i}  {(c.company or 'Unknown').upper()}")
+                    print(f"    TIER: {opp['tier'].upper()}")
+                    print(f"    INTENT: {opp['tier'].upper()}")
+                    print(f"    SERVICE: {(opp['service'] or 'unknown').replace('_', ' ').title()}")
+                    age = age_days_from(c.published_at)
+                    print(f"    FRESHNESS: {_freshness(age) if age is not None else 'unknown'}")
+
+                    # WHY
+                    print()
+                    print("    WHY:")
+                    if c.snippet:
+                        print(f"    {c.snippet[:120]}")
+                    if c.evidence:
+                        for ev in c.evidence[:2]:
+                            print(f"    - [{ev.get('status', '?')}] {ev.get('excerpt', ev.get('kind', ''))[:100]}")
+
+                    # CONTACT
+                    print()
+                    print("    CONTACT:")
+                    # check store for contacts
+                    lead_id = lead.id if hasattr(lead, "id") else None
+                    if lead_id:
+                        stored_contacts = store.lead_contacts(lead_id)
+                        if stored_contacts:
+                            for ct in stored_contacts[:2]:
+                                name = ct.get("name") or ""
+                                role = ct.get("role") or ""
+                                email = ct.get("email") or ""
+                                print(f"    {(role or name) or 'Unknown'}" +
+                                      (f" — {email}" if email else ""))
+                        else:
+                            print("    No contacts extracted yet")
+                    else:
+                        print("    No contacts extracted yet")
+
+                    # OFFER
+                    print()
+                    print("    OFFER:")
+                    if offer:
+                        print(f"    {offer['name']}")
+                        print(f"    {offer['pitch'][:100]}")
+                    else:
+                        print(f"    {(opp['service'] or 'unknown').replace('_', ' ').title()}")
+
+                    # ACTION
+                    print()
+                    print("    ACTION:")
+                    if not lead_id or not store.lead_contacts(lead_id):
+                        print("    RESEARCH CONTACT")
+                    elif opp.get("brief"):
+                        print("    REVIEW SALES BRIEF")
+                    else:
+                        print("    REVIEW OPPORTUNITY")
+
+            elif due_followups:
+                print()
+                print("━" * 60)
+                print("FOLLOW-UPS")
+                print("━" * 60)
+                for fu in due_followups[:3]:
+                    lead_obj = store.get_lead(fu.lead_id)
+                    company = lead_obj.company_name if lead_obj else f"lead#{fu.lead_id}"
+                    print(f"  {company} — {fu.kind} (due {fu.due_date})")
+                    print(f"    ACTION: {fu.recommended_action or 'Follow up'}")
+
+            elif pending_quotes:
+                print()
+                print("━" * 60)
+                print("QUOTE PENDING")
+                print("━" * 60)
+                for q in pending_quotes[:3]:
+                    lead_obj = store.get_lead(q.get("lead_id"))
+                    company = lead_obj.company_name if lead_obj else f"lead#{q.get('lead_id')}"
+                    print(f"  {company} — quote #{q.get('id')} pending")
+
+            else:
+                print()
+                print("━" * 60)
+                print("NO STRONG OPPORTUNITIES TODAY")
+                print("━" * 60)
+                print(f"Candidates researched: {len(researched)}")
+                print(f"Qualified: {len(opportunities)}")
+                print(f"Strong opportunities: 0")
+                print()
+                print("Why:")
+                print("No candidate had sufficient commercial intent.")
+                print()
+                print("BEST NEXT EXPERIMENT:")
+                if best:
+                    b = best[0]
+                    print(f"  Run: \"{b.get('query', '?')}\"")
+                    print(f"  Source: {b.get('source', '?')}")
+                    print(f"  Reason: historically stronger signal")
+                else:
+                    print("  bam discover --intent --campaign <service>")
+
+            return 0
 
         if args.command == "discover":
             from bam.discovery import (
@@ -1095,9 +1719,6 @@ def main(argv: list[str] | None = None) -> int:
             store = _store()
             followups = store.pending_follow_ups()
             candidates = store.queue_candidates()
-            # §16 anti-spam caps are configurable, not hardcoded; the cap
-            # counts REAL contact actions from the audit trail (last 7 days)
-            # so repeated runs cannot quietly exceed the daily budget.
             sales_cfg = (load_config().raw.get("sales") or {})
             entries, stats = build_daily_queue(
                 candidates,
@@ -1105,49 +1726,107 @@ def main(argv: list[str] | None = None) -> int:
                 contacted_this_week=store.contact_actions_last_7_days(),
                 max_daily_outreach=int(sales_cfg.get("max_daily_outreach", 5)))
 
+            # Priority 1: fresh explicit/strong opportunities
+            hot = [o for o in store.list_opportunities()
+                   if o["state"] == "discovered"
+                   and o["intent_tier"] in ("explicit", "strong")
+                   and o["freshness"] not in ("very_low",)]
+
+            # Priority 2: qualified leads needing outreach
+            qualified = [e for e in entries if e.tier in ("A", "B")]
+
+            # Priority 3: due follow-ups
+            due_followups = [fu for fu in followups]
+
+            # Check if there is anything worth acting on today
+            has_any = hot or qualified or due_followups
+
+            if not has_any:
+                # Empty result behavior (§17-§18): honest admission, not garbage
+                print("NO STRONG OPPORTUNITIES TODAY")
+                print("=" * 60)
+                opps = store.list_opportunities()
+                leads = store.queue_candidates()
+                print(f"Research completed: {len(leads)}")
+                print(f"Opportunities found: {len(opps)}")
+                print(f"Qualified: {sum(1 for e in entries if e.tier in ('A', 'B'))}")
+                print()
+                print("Likely issue: source/query quality")
+                print()
+
+                # Recommended next experiment from query catalog
+                try:
+                    best = store.best_queries_for_next_campaign(limit=3)
+                    if best:
+                        print("Best next experiment:")
+                        for b in best[:2]:
+                            print(f"  Run query \"{b['query']}\" against {b.get('source', '?')}")
+                            print(f"    Reason: {b.get('state', 'new')} — "
+                                  f"{b.get('total_qualified', 0)} qualified from "
+                                  f"{b.get('total_candidates', 0)} candidates")
+                    else:
+                        print("Recommended action:")
+                        print("  bam discover --intent")
+                        print("  bam discover --campaign <service>")
+                except Exception:
+                    print("Recommended action:")
+                    print("  bam discover --intent")
+                    print("  bam discover --campaign <service>")
+                return 0
+
             print("TODAY'S SALES QUEUE")
             print("=" * 60)
-            if not entries:
-                print("(empty) Run 'bam discover --campaign <service>' to find")
-                print("companies, then 'bam research <url>' to investigate them.")
-            shown = 0
-            for e in entries:
-                if e.tier == "D" and shown >= 5:
-                    continue  # never bury the operator in rejects
-                shown += 1
-                print(f"\n{shown}. {e.company}" + (f" ({e.domain})" if e.domain else ""))
-                print(f"   STATE: {e.state}  SCORE: {e.score if e.score is not None else '-'}"
-                      f"  TIER: {e.tier}  ACTION: {e.action}")
-                if e.service:
-                    offer = recommend_offer(e.service)
-                    print(f"   SELL: {offer['name'] if offer else e.service}")
-                if e.contact:
-                    print(f"   CONTACT: {e.contact}")
-                if e.why.bullets:
-                    print("   WHY:")
-                    for b in e.why.bullets[:3]:
-                        print(f"     - {b}")
-                if e.why.unknowns:
-                    print("   UNKNOWN:")
-                    for u in e.why.unknowns[:2]:
-                        print(f"     - {u}")
-                if e.tier == "D":
-                    break
-            print()
+
+            if hot:
+                print("HOT OPPORTUNITIES (explicit/strong intent)")
+                for o in hot[:5]:
+                    print(f"\n  #{o['id']} {o['title'][:70]}")
+                    print(f"    INTENT: {o['intent_tier'].upper()}"
+                          f"  SERVICE: {(o['service_fit'] or '?').replace('_', ' ')}"
+                          f"  AGE: {o['freshness'].replace('_', ' ')}")
+                    print(f"    WHY: publicly requested help "
+                          f"{(o['service_fit'] or '').replace('_', ' ') or 'with a task we sell'}.")
+                    print(f"    ACTION: bam opportunity {o['id']}")
+                print()
+
+            if qualified:
+                print("CONTACT-READY LEADS")
+                for e in qualified[:5]:
+                    print(f"\n  {e.company}" + (f" ({e.domain})" if e.domain else ""))
+                    print(f"   STATE: {e.state}  SCORE: {e.score if e.score is not None else '-'}"
+                          f"  TIER: {e.tier}  ACTION: {e.action}")
+                    if e.service:
+                        offer = recommend_offer(e.service)
+                        print(f"   SELL: {offer['name'] if offer else e.service}")
+                    if e.contact:
+                        print(f"   CONTACT: {e.contact}")
+                    if e.why.bullets:
+                        print("   WHY:")
+                        for b in e.why.bullets[:3]:
+                            print(f"     - {b}")
+                    if e.why.unknowns:
+                        print("   UNKNOWN:")
+                        for u in e.why.unknowns[:2]:
+                            print(f"     - {u}")
+                print()
+
+            if due_followups:
+                print("FOLLOW-UPS DUE")
+                for fu in due_followups[:3]:
+                    lead = store.get_lead(fu.lead_id)
+                    company = lead.company_name if lead else f"lead#{fu.lead_id}"
+                    print(f"  FOLLOW UP: {company} — {fu.kind}"
+                          f" (due {fu.due_date})")
+                    print(f"    reason: {(fu.reason or '-')[:90]}")
+                    print(f"    action: {(fu.recommended_action or '-')[:90]}")
+                print()
+
             print("RECOMMENDED TODAY")
             print("=" * 60)
             contactable_a = sum(1 for e in entries if e.tier == "A")
             research_b = sum(1 for e in entries if e.tier == "B")
             print(f"Contact-ready (A): {contactable_a}   Needs research (B): {research_b}")
-            print(f"Follow-ups due: {len(followups)}")
-            if followups:
-                for fu in followups[:3]:
-                    lead = store.get_lead(fu.lead_id)
-                    company = lead.company_name if lead else f"lead#{fu.lead_id}"
-                    print(f"  FOLLOW UP TODAY: {company} — {fu.kind}"
-                          f" (due {fu.due_date})")
-                    print(f"    reason: {(fu.reason or '-')[:90]}")
-                    print(f"    action: {(fu.recommended_action or '-')[:90]}")
+            print(f"Follow-ups due: {len(due_followups)}")
             quotes_pending = store._conn().execute(
                 "SELECT COUNT(*) FROM quotes WHERE state='approved'").fetchone()[0]
             print(f"Quotes pending: {quotes_pending}")
@@ -1186,6 +1865,119 @@ def main(argv: list[str] | None = None) -> int:
                 if r["lead_state"]:
                     print(f"    Lead:     #{r['lead_id']} ({r['lead_state']})")
                 print()
+            return 0
+
+        if args.command == "bootstrap":
+            store = _store()
+            import yaml
+            seed_path = Path(__file__).parent.parent / "data" / "bootstrap" / "seed_queries.yaml"
+            if not seed_path.exists():
+                print(f"ERROR: seed queries not found at {seed_path}", file=sys.stderr)
+                return 1
+
+            with open(seed_path, "r", encoding="utf-8") as f:
+                seed_data = yaml.safe_load(f)
+
+            # Seed query catalog
+            services_to_seed = [args.service] if args.service else [
+                "pdf_to_excel", "excel_cleaning", "qa_automation", "generic"
+            ]
+            seeded = 0
+            for svc in services_to_seed:
+                svc_data = seed_data.get(svc, {})
+                for lang, queries in svc_data.items():
+                    for q in queries:
+                        if not q or not q.strip():
+                            continue
+                        if args.dry_run:
+                            print(f"  [dry-run] seed: {svc}/{lang}: {q[:60]}")
+                            seeded += 1
+                            continue
+                        store.update_query_catalog(
+                            query=q.strip(), service=svc,
+                            source="seed_bootstrap",
+                            candidates=0, researched=0,
+                            qualified=0, contactable=0,
+                        )
+                        seeded += 1
+
+            # Import CSV if provided
+            imported_csv = 0
+            if args.import_csv:
+                csv_path = Path(args.import_csv)
+                if not csv_path.exists():
+                    print(f"ERROR: CSV file not found: {csv_path}", file=sys.stderr)
+                    return 1
+                import csv
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        company = (row.get("company") or "").strip()
+                        url = (row.get("url") or "").strip()
+                        title = (row.get("title") or "").strip()
+                        snippet = (row.get("snippet") or "").strip()
+                        if not company and not url:
+                            continue
+                        if args.dry_run:
+                            print(f"  [dry-run] import: {company or url[:40]}")
+                            imported_csv += 1
+                            continue
+                        # Create as discovered lead
+                        store.create_lead(
+                            company_name=company or url,
+                            url=url or None,
+                            industry=None,
+                            source="bootstrap_csv",
+                            notes=f"Imported from CSV. {snippet[:200]}" if snippet else None,
+                        )
+                        imported_csv += 1
+
+            # Import JSON if provided
+            imported_json = 0
+            if args.import_json:
+                json_path = Path(args.import_json)
+                if not json_path.exists():
+                    print(f"ERROR: JSON file not found: {json_path}", file=sys.stderr)
+                    return 1
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, list):
+                    print("ERROR: JSON must be a list of objects", file=sys.stderr)
+                    return 1
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    company = (item.get("company") or "").strip()
+                    url = (item.get("url") or "").strip()
+                    title = (item.get("title") or "").strip()
+                    snippet = (item.get("snippet") or "").strip()
+                    if not company and not url:
+                        continue
+                    if args.dry_run:
+                        print(f"  [dry-run] import: {company or url[:40]}")
+                        imported_json += 1
+                        continue
+                    store.create_lead(
+                        company_name=company or url,
+                        url=url or None,
+                        industry=None,
+                        source="bootstrap_json",
+                        notes=f"Imported from JSON. {snippet[:200]}" if snippet else None,
+                    )
+                    imported_json += 1
+
+            # Summary
+            print(f"\nBOOTSTRAP COMPLETE")
+            print(f"{'=' * 40}")
+            print(f"  Queries seeded: {seeded}")
+            if args.import_csv:
+                print(f"  CSV imports:    {imported_csv}")
+            if args.import_json:
+                print(f"  JSON imports:   {imported_json}")
+            if args.dry_run:
+                print(f"  (dry-run mode: no changes written)")
+            print()
+            print("Next: run 'bam hunt' to discover opportunities using these queries")
             return 0
 
     except KeyboardInterrupt:

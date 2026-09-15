@@ -18,6 +18,11 @@ discovery:
 sales:
   max_daily_outreach: 5        # anti-spam: contact-actions recommended per day
   queue_top: 5                 # leads shown in the daily queue
+  hunt:
+    max_candidates: 30         # max candidates to research per hunt
+    max_research: 15           # max candidates to actually research (fetch pages)
+    top_opportunities: 5       # opportunities shown in final output
+    max_contacts: 10           # max contact discovery attempts
 
 fetch:
   max_pages: 5                 # homepage + up to max_subpages subpages

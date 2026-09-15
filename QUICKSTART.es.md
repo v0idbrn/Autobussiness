@@ -17,11 +17,59 @@ service pdf-to-excel  : ok
 service excel-cleaner : ok
 ```
 
-## Paso 2: Encontrar empresas
+## Paso 2: Sembrar Queries (Primera Vez)
+
+```bash
+# Sembrar el catálogo de queries con frases de búsqueda probadas
+uv run bam bootstrap
+
+# O sembrar para un servicio específico
+uv run bam bootstrap --service pdf_to_excel
+
+# Importar leads desde un archivo CSV
+uv run bam bootstrap --import-csv leads.csv
+
+# Previsualizar sin escribir
+uv run bam bootstrap --dry-run
+```
+
+El bootstrap siembra 51 queries en todos los servicios. Esto le da a `bam hunt`
+términos de búsqueda inmediatos en el primer ejecución.
+
+## Paso 3: Hunt Diario (Recomendado)
+
+```bash
+# Un comando: discover → research → qualify → opportunities
+uv run bam hunt
+
+# Servicio específico:
+uv run bam hunt --service pdf_to_excel
+
+# Múltiples servicios:
+uv run bam hunt --service pdf_to_excel excel_cleaning
+```
+
+`bam hunt` automáticamente:
+- Selecciona mejores queries del historial de aprendizaje (o queries semilla en arranque en frío)
+- Descubre candidatos de job boards + remote boards + news RSS
+- Investiga los mejores candidatos (fetch pages, extrae signals)
+- Crea oportunidades con intent scoring
+- Muestra top 5 oportunidades con WHY, CONTACT, OFFER, ACTION
+
+## Paso 4: Descubrimiento Manual (Alternativa)
 
 ```bash
 # Desde una búsqueda de noticias (empresas reales desde resultados RSS)
 uv run bam discover --source rss --query "accounting firms" --limit 10
+
+# Encontrar EXPRESIONES PÚBLICAS DE NECESIDAD (contrataciones, pedidos de ayuda)
+uv run bam discover --intent --campaign pdf_to_excel --limit 10
+
+# Query de intención personalizado (quien pide ayuda específica)
+uv run bam discover --intent --intent-query "help converting PDF to Excel"
+
+# Minar directorio curado para leads (intención débil/media — prueba existencia, no necesidad)
+uv run bam discover --intent --directory "https://<url-del-directorio>" --limit 10
 
 # Desde una lista de URLs
 uv run bam discover --urls https://acme.test https://beta.test
@@ -30,7 +78,8 @@ uv run bam discover --urls https://acme.test https://beta.test
 uv run bam discover --csv companies.csv
 ```
 
-Los dominios en denylist se filtran automáticamente.
+Los dominios en denylist se filtran automáticamente. Las empresas de directorios
+obtienen SEÑAL DE LEAD (prueba de existencia), no intención comercial automática.
 
 ## Paso 3: Investigar un prospecto
 
@@ -46,7 +95,9 @@ evidencia SHA-256; cada claim registra de qué página vino.
 
 ```bash
 uv run bam leads                # ver todos los leads
-uv run bam next                 # ¿qué hago ahora?
+uv run bam next                 # cola priorizada del día (OPORTUNIDADES CALIENTES → LISTOS PARA CONTACTO → SEGUIMIENTOS)
+uv run bam opportunities        # todas las oportunidades abiertas
+uv run bam campaign-report      # embudo + calidad de fuentes/queries
 
 # Aprobar outreach (decisión HUMANA)
 uv run bam approve-contact 1 -y
