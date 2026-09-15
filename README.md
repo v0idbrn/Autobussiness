@@ -73,7 +73,9 @@ environments against frozen, versioned contracts (`docs/service-contracts.md`).
   paths; every runtime write is audited.
 - **Backups prove themselves**: every `bam backup` verifies integrity, row
   counts against the live DB, and performs a restore drill — an unproven
-  backup is quarantined, never presented as valid.
+  backup is quarantined, never presented as valid. Retention: the last
+  N verified backups are kept (`backup.keep` in `config.yaml`, default 5);
+  older ones are pruned automatically after each verified backup.
 - **Fail closed**: corrupted configs, corrupt backups and invalid states stop
   the operation instead of degrading silently.
 

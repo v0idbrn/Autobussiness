@@ -5,6 +5,10 @@
 database:
   path: "data/bam.db"
 
+backup:
+  keep: 5                      # verified backups retained; older ones pruned
+                               # automatically after each bam backup
+
 fetch:
   max_pages: 5                 # homepage + up to max_subpages subpages
   max_subpages: 4              # /about, /services, /team, /contact in research

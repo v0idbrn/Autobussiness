@@ -1333,13 +1333,29 @@ class Store:
         row counts vs live, restore drill). A backup that cannot be proven
         is renamed to *.failed and RuntimeError is raised - we never present
         an unproven backup as a safety net.
+
+        Retention: after a verified backup, older verified backups are pruned
+        down to `backup.keep` (config.yaml; default 5). Quarantined *.failed
+        files are never pruned - they are failure evidence.
         """
         import hashlib
+
+        raw_keep = self.config.raw.get("backup", {}).get("keep", 5)
+        try:
+            keep = int(raw_keep)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"backup.keep must be an integer, got {raw_keep!r}") from exc
+        if keep < 1:
+            raise ValueError(f"backup.keep must be >= 1, got {keep}")
 
         bd = backup_dir or (self.config.paths.database.parent.parent / "backups")
         bd.mkdir(parents=True, exist_ok=True)
         ts = _utcnow().replace(":", "-").replace(" ", "_")
         dest = bd / f"bam_{ts}.db"
+        counter = 1
+        while dest.exists():  # two backups within the same second must not collide
+            dest = bd / f"bam_{ts}_{counter}.db"
+            counter += 1
         # bound parameter (paths with quotes used to break the SQL literal)
         with self.transaction() as conn:
             conn.execute("VACUUM INTO ?", (str(dest),))
@@ -1353,9 +1369,36 @@ class Store:
                                   payload={"path": str(dest.with_suffix(".failed")),
                                            "size": size, "sha256": sha})
             raise
-        payload = {"path": str(dest), "size": size, "sha256": sha, **verification}
+        payload = {"path": str(dest), "size": size, "sha256": sha,
+                   "kept": keep, **verification}
         self.audit_standalone(actor="system", action="db.backup", payload=payload)
+        payload["pruned"] = [str(p) for p in self._prune_backups(bd, keep)]
         return payload
+
+    def _prune_backups(self, backup_dir: Path, keep: int) -> list[Path]:
+        """Delete the oldest verified backups (bam_*.db) beyond `keep`,
+        oldest first by filename (names embed a UTC timestamp, so name order
+        IS time order). *.failed quarantine files are never touched. A file
+        that cannot be deleted (locked, race with another process) is left
+        in place - pruning never fails a good backup. Each pruning run that
+        deletes something is audited."""
+        backups = sorted(backup_dir.glob("bam_*.db"))
+        excess = len(backups) - keep
+        if excess <= 0:
+            return []
+        pruned: list[Path] = []
+        for old in backups[:excess]:
+            try:
+                old.unlink()
+                pruned.append(old)
+            except OSError:
+                continue
+        if pruned:
+            self.audit_standalone(
+                actor="system", action="db.backup_pruned",
+                payload={"kept": len(backups) - len(pruned),
+                         "pruned": [str(p) for p in pruned]})
+        return pruned
 
     def restore(self, backup_path: Path) -> bool:
         """Restore database from a verified backup. Creates a consistent

@@ -404,6 +404,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"verified       : integrity ok, "
                   f"{result['tables']} tables / {result['rows']:,} rows match live DB, "
                   "restore drill passed")
+            pruned = result.get("pruned", [])
+            if pruned:
+                print(f"pruned         : {len(pruned)} old backup(s) "
+                      f"(keep={result['kept']})")
+                for p in pruned:
+                    print(f"                 {p}")
             return 0
 
         if args.command == "restore":

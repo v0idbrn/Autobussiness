@@ -79,7 +79,9 @@ entornos contra contratos congelados y versionados
 - **Los backups se prueban a sí mismos**: cada `bam backup` verifica
   integridad, conteos de filas contra la DB viva y ejecuta un simulacro de
   restauración — un backup no probado se pone en cuarentena, nunca se presenta
-  como válido.
+  como válido. Retención: se conservan los últimos N backups verificados
+  (`backup.keep` en `config.yaml`, 5 por defecto); los más antiguos se podan
+  automáticamente tras cada backup verificado.
 - **Fallo cerrado**: configs corruptas, backups corruptos y estados inválidos
   detienen la operación en lugar de degradar en silencio.
 

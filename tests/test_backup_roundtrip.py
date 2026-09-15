@@ -126,3 +126,99 @@ def test_restore_roundtrip_preserves_and_audits(populated: Store,
 def test_restore_rejects_missing_file(populated: Store, tmp_path) -> None:
     with pytest.raises(ValueError, match="not found"):
         populated.restore(tmp_path / "nope.db")
+
+
+# -- retention policy ----------------------------------------------------------
+
+
+def _with_keep(config, keep):
+    """Config clone whose raw YAML dict carries backup.keep."""
+    import dataclasses
+
+    return dataclasses.replace(
+        config, raw={"backup": {"keep": keep}})
+
+
+def test_backup_prunes_to_keep_limit(config, tmp_path) -> None:
+    cfg = _with_keep(config, 3)
+    s = Store(cfg)
+    try:
+        cid = s.upsert_company("Reten Co", "reten.test")
+        s.upsert_lead(cid, "https://reten.test", "run-rt")
+        bdir = tmp_path / "backups"
+        total_pruned = 0
+        for _ in range(5):
+            r = s.backup(bdir)
+            assert r["verified"] is True
+            total_pruned += len(r["pruned"])
+        files = sorted(bdir.glob("bam_*.db"))
+        assert len(files) == 3, "retention must keep exactly `keep` backups"
+        assert r["kept"] == 3
+        # each run prunes only its own excess: none, none, none, 1, 1
+        assert total_pruned == 2
+        assert files == sorted(bdir.glob("bam_*.db"))
+        # pruning is audited
+        audits = s._conn().execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='db.backup_pruned'").fetchone()[0]
+        assert audits >= 1
+    finally:
+        s.close()
+
+
+def test_backup_retention_default_five(config, tmp_path) -> None:
+    s = Store(config)  # raw={} -> default keep=5
+    try:
+        cid = s.upsert_company("Default Co", "default.test")
+        s.upsert_lead(cid, "https://default.test", "run-d")
+        bdir = tmp_path / "backups"
+        for _ in range(7):
+            s.backup(bdir)
+        assert len(list(bdir.glob("bam_*.db"))) == 5
+    finally:
+        s.close()
+
+
+def test_backup_pruning_never_touches_quarantine(config, tmp_path) -> None:
+    cfg = _with_keep(config, 1)
+    s = Store(cfg)
+    try:
+        cid = s.upsert_company("Quar Co", "quar.test")
+        s.upsert_lead(cid, "https://quar.test", "run-q")
+        bdir = tmp_path / "backups"
+        s.backup(bdir)
+        # a quarantined backup from a past verification failure
+        failed = bdir / "bam_2020-01-01_00-00-00.db.failed"
+        failed.write_bytes(b"quarantine evidence")
+        r = s.backup(bdir)
+        assert r["verified"] is True
+        assert failed.exists(), "*.failed files must never be pruned"
+        assert len(list(bdir.glob("bam_*.db"))) == 1
+    finally:
+        s.close()
+
+
+def test_backup_same_second_no_collision(config, tmp_path) -> None:
+    """Regression: two backups within the same second must not collide on
+    the timestamp filename (VACUUM INTO fails on an existing target)."""
+    s = Store(config)
+    try:
+        cid = s.upsert_company("Fast Co", "fast.test")
+        s.upsert_lead(cid, "https://fast.test", "run-f")
+        bdir = tmp_path / "backups"
+        r1 = s.backup(bdir)
+        r2 = s.backup(bdir)
+        assert r1["path"] != r2["path"]
+        assert len(list(bdir.glob("bam_*.db"))) == 2
+    finally:
+        s.close()
+
+
+def test_backup_keep_validation(config, tmp_path) -> None:
+    s = Store(_with_keep(config, 0))
+    with pytest.raises(ValueError, match="keep must be >= 1"):
+        s.backup(tmp_path / "backups")
+    s.close()
+    s2 = Store(_with_keep(config, "three"))
+    with pytest.raises(ValueError, match="must be an integer"):
+        s2.backup(tmp_path / "backups")
+    s2.close()

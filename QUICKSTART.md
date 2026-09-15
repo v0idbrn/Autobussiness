@@ -110,6 +110,7 @@ uv run bam doctor
 # See all commands
 uv run bam --help
 
-# Backup your data
+# Backup your data (self-verifying; keeps the last 5 by default,
+# prunes older ones automatically — see backup.keep in config/config.yaml)
 uv run bam backup
 ```

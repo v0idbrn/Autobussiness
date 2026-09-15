@@ -103,7 +103,8 @@ outreach → deliver → cobro. Repetí con el próximo cliente.
 ```bash
 uv run bam doctor      # salud del sistema
 uv run bam --help      # todos los comandos
-uv run bam backup      # backup auto-verificado
+uv run bam backup      # backup auto-verificado; conserva los últimos 5 por
+                       # defecto y poda los antiguos (backup.keep en config.yaml)
 ```
 
 Antes de hacer outreach real, leé [LEGAL.md](LEGAL.md): que BAM encuentre un
