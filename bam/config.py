@@ -8,13 +8,22 @@ fetch caps are deliberately configurable (plan v3.1 §8, §4).
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+def _default_root() -> Path:
+    """Source repo root - or, in a frozen EXE (PyInstaller), the folder that
+    contains the executable, so config/ and data/ live next to bam.exe."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+DEFAULT_ROOT = _default_root()
 
 
 def project_root() -> Path:

@@ -611,7 +611,11 @@ def main(argv: list[str] | None = None) -> int:
                                          reason=args.reason or "manual qualification")
                 store.transition_lead(lead.id, "qualified", run_id="manual_qualify",
                                      reason=args.reason or "manual qualification")
-                print(f"lead {lead.id}: {lead.state} -> qualified")
+                # Complete the automatic chain to the human gate: qualified ->
+                # approval_required is AUTOMATIC; without this the lead strands.
+                store.transition_lead(lead.id, "approval_required", run_id="manual_qualify",
+                                     reason="queued for human approval")
+                print(f"lead {lead.id}: {lead.state} -> approval_required")
             except TransitionError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2

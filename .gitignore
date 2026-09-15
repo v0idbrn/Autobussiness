@@ -1,37 +1,65 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
+*$py.class
 .venv/
-*.egg-info/
-.pytest_cache/
+venv/
+env/
+.python-version
 
-# BAM runtime data (never commit: leads, evidence, jobs, DB).
-# denylist.yaml is policy, not runtime data - it IS committed.
+# --- Testing / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Packaging (EXE is not versioned; reproducible via build script) ---
+build/
+dist/
+*.spec
+!bam.spec
+bam_exe_build/
+*.manifest
+
+# --- BAM runtime data (leads, evidence, jobs, runs, DB) ---
+# denylist.yaml is POLICY - it IS committed.
 data/*
 !data/denylist.yaml
-
-# Backups are business data, not source (self-verified, but still local-only)
 backups/
 
-# Third-party research clones (reference material, not part of BAM)
+# --- Logs & temporaries ---
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+*~
+
+# --- Secrets / credentials ---
+.env
+.env.*
+*.key
+*.pem
+secrets.yaml
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+!.vscode/extensions.json
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# --- Local agent / tool state & third-party research clones ---
+.agents/
+.freebuff/
+.opencode/
 ECC/
 graphify/
 ponytail/
 skills/
-
-# Local agent/tool state
-.agents/
-.freebuff/
-.opencode/
-dist/
-
-# Scratch / one-off inspection scripts
 _inspect_db.py
-
-# Secrets
-.env
-*.key
-
-# OS
-Thumbs.db
-.DS_Store

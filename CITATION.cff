@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: >-
+  If you use BAM (Business Automation Machine), please cite it using this
+  metadata.
+title: BAM - Business Automation Machine
+type: software
+authors:
+  - name: v0idbrn
+repository-code: "https://github.com/v0idbrn/Autobussiness"
+url: "https://github.com/v0idbrn/Autobussiness"
+abstract: >-
+  Local-first prospect-to-delivery operating system for a one-person tech
+  business: RSS/URL/CSV company discovery, evidence-backed multi-page web
+  research with SHA-256 provenance, deterministic opportunity scoring,
+  human-gated commercial workflow (briefs, outreach drafts, quotes), and
+  subprocess adapters for external document services. No automatic outreach;
+  every sensitive action requires recorded human approval.
+keywords:
+  - business-automation
+  - lead-research
+  - crm
+  - local-first
+  - evidence-based
+  - human-in-the-loop
+license: MIT
+date-released: "2026-09-15"
