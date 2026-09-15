@@ -103,6 +103,11 @@ servicios.
 
 ```bash
 uv run bam discover --source rss --query "accounting firms" --limit 10
+
+# Campaña de intención comercial: primero directorios curados, luego catálogo
+# de queries (por servicio), con filtrado automático de publishers/agregadores:
+uv run bam discover --campaign pdf_to_excel excel_cleaning \
+    --directory "https://www.cpadirectory.com/" --per-query 5
 uv run bam research https://empresa-ejemplo.com
 uv run bam leads
 uv run bam next

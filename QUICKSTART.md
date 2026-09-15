@@ -23,6 +23,10 @@ service excel-cleaner : ok
 # From a news search (finds real companies from RSS results)
 uv run bam discover --source rss --query "accounting firms" --limit 10
 
+# Better: a commercial campaign against a directory you curated yourself
+uv run bam discover --campaign pdf_to_excel \
+    --directory "https://<directory-or-association-page>" --per-query 5
+
 # From a list of URLs
 uv run bam discover --urls https://acme.test https://beta.test
 

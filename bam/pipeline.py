@@ -235,6 +235,41 @@ def research(
                       detail={"fetched": subpages_fetched,
                               "candidates": max_subpages})
 
+    # -- 4c. commercial signals (Discovery V2: deterministic, no LLM) --------------
+    # Weighted per-service phrases across homepage + subpages, publisher
+    # classification, and OBSERVED-only contactability. Stored in signals;
+    # never promotes evidence or changes scores.
+    from bam.signals import aggregate_commercial, extract_page_signals
+
+    from urllib.parse import urlparse as _urlparse
+    t0 = time.monotonic()
+    page_sigs = [
+        extract_page_signals(h, url=u,
+                             is_homepage=(u == final_url))
+        for u, h in page_pairs
+    ]
+    homepage_signals = page_pairs[0][1]
+    commercial = aggregate_commercial(
+        _urlparse(final_url).netloc.lower().removeprefix("www."),
+        page_sigs,
+        contact={
+            "emails": homepage_signals.get("emails"),
+            "has_contact_form": homepage_signals.get("has_contact_form"),
+            "contact_url": homepage_signals.get("contact_url"),
+            "mailto_count": homepage_signals.get("mailto_count"),
+        },
+        title=homepage_signals.get("title"),
+    )
+    signals["commercial"] = commercial.as_signals_dict()
+    manifest.add_step("commercial_signals", elapsed_s=time.monotonic() - t0,
+                      detail={"recommended_service": commercial.recommended_service,
+                              "total_score": commercial.total_score,
+                              "candidate_type": commercial.candidate_type.kind})
+    if commercial.ambiguous:
+        manifest.add_step("commercial_ambiguous", detail={
+            "recommended_service": commercial.recommended_service,
+            "total_score": commercial.total_score})
+
     # -- 5. evidence --------------------------------------------------------------------
     ev: Evidence = page_evidence(final_url, fetched_bytes)
     evidence_rows = [ev.to_row()] + [sev.to_row() for sev in sub_evidence]

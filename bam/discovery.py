@@ -217,7 +217,206 @@ def filter_denied(companies: list[DiscoveredCompany]) -> tuple[list[DiscoveredCo
     return allowed, denied
 
 
-# -- RSS discovery ---------------------------------------------------------------
+# -- directory / association discovery (Discovery V2 §1: primary source) ----------
+
+def discover_from_directory(directory_url: str, *, limit: int = 15,
+                            fetcher: Fetcher | None = None,
+                            skip: set[str] | None = None) -> list[DiscoveredCompany]:
+    """Extract company candidates from a public directory/association/member
+    list page (operator-curated URL). 1 request; robots respected by the
+    fetcher; failures skip cleanly. Outbound links are classified: social,
+    directory and publisher hosts never become candidates (V2 §4)."""
+    from bam.signals import classify_candidate
+
+    if not directory_url.strip():
+        return []
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    try:
+        try:
+            res = fetcher.fetch(directory_url)
+        except Exception:
+            return []
+        if res.status != 200:
+            return []
+        html = res.content.decode("utf-8", errors="replace")
+    finally:
+        if should_close:
+            fetcher.close()
+
+    dir_host = urlparse(res.final_url).netloc.lower()
+    from bam.extractors import parse_html
+    parser = parse_html(html)
+
+    results: list[DiscoveredCompany] = []
+    seen_domains: set[str] = set()
+    skip = skip if skip is not None else _DOMAIN_SKIP
+    for href, text in parser.links:
+        if len(results) >= limit:
+            break
+        if not href.startswith(("http://", "https://")):
+            continue  # outbound companies only; same-host nav is the directory
+        target_host = urlparse(href).netloc.lower()
+        if target_host == dir_host or not target_host:
+            continue
+        try:
+            final_url = validate_url(href)
+        except Exception:
+            continue
+        domain = target_host.removeprefix("www.")
+        if domain in seen_domains or domain in skip:
+            continue
+        ct = classify_candidate(domain)
+        if ct.kind != "company":
+            continue
+        seen_domains.add(domain)
+        label = (text or domain).strip()[:80]
+        results.append(DiscoveredCompany(
+            name=label.title() if label.islower() else label,
+            domain=domain,
+            url=final_url,
+            source="directory",
+            source_url=res.final_url,
+            industry=None,
+            evidence=f"listed on directory {res.final_url} (link: {label[:60]})",
+        ))
+    return results
+
+
+# -- web search discovery (Discovery V2 §1: experimental secondary) ---------------
+
+_WEB_SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
+
+
+def parse_web_search(html: str, *, query: str, source_url: str | None,
+                     limit: int = 8) -> list[DiscoveredCompany]:
+    """Parse a DuckDuckGo HTML results page into candidate companies.
+
+    Results are wrapped as /l/?uddg=<url-encoded-destination>; ads (/y.js)
+    and non-company hosts are skipped. Pure function: fully offline-testable.
+    """
+    from urllib.parse import unquote
+
+    results: list[DiscoveredCompany] = []
+    seen_domains: set[str] = set()
+    for m in re.finditer(r"uddg=([^&\"']+)", html):
+        if len(results) >= limit:
+            break
+        raw = unquote(m.group(1))
+        if "/y.js" in raw or "duckduckgo.com" in urlparse(raw).netloc:
+            continue
+        try:
+            final_url = validate_url(raw)
+        except Exception:
+            continue
+        domain = urlparse(final_url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if not domain or domain in _DOMAIN_SKIP or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        results.append(DiscoveredCompany(
+            name=domain.split(".")[0].title(),
+            domain=domain,
+            url=final_url,
+            source="web_search",
+            source_url=source_url,
+            industry=None,
+            evidence=f"found via web search: {query}",
+        ))
+    return results
+
+
+def discover_from_web_search(query: str, *, limit: int = 8,
+                             fetcher: Fetcher | None = None) -> list[DiscoveredCompany]:
+    """Discover companies from a commercial-intent web search.
+
+    1 request per query; any failure skips cleanly (no retries, no evasion).
+    """
+    if not query.strip():
+        return []
+    search_url = _WEB_SEARCH_URL.format(query=quote_plus(query.strip()))
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    try:
+        try:
+            res = fetcher.fetch(search_url)
+        except Exception:
+            return []
+        if res.status != 200:
+            return []
+        html = res.content.decode("utf-8", errors="replace")
+        return parse_web_search(html, query=query, source_url=search_url,
+                                limit=limit)
+    finally:
+        if should_close:
+            fetcher.close()
+
+
+# -- commercial-intent campaign (Discovery V2 §1-§2) ------------------------------
+
+from bam.signals import QUERY_CATALOG  # noqa: E402  (catalog lives with the signal engine)
+
+
+def filter_publishers(
+    companies: list[DiscoveredCompany],
+) -> tuple[list[DiscoveredCompany], list[tuple[DiscoveredCompany, str]]]:
+    """Split candidates into (companies, publishers) using the deterministic
+    classifier. Publishers/aggregators/directories/social hosts never compete
+    as commercial leads - they are reported, not silently mixed in."""
+    from bam.signals import classify_candidate
+
+    companies_out: list[DiscoveredCompany] = []
+    publishers: list[tuple[DiscoveredCompany, str]] = []
+    for c in companies:
+        ct = classify_candidate(c.domain)
+        if ct.kind == "company":
+            companies_out.append(c)
+        else:
+            publishers.append((c, ct.reason))
+    return companies_out, publishers
+
+
+def commercial_candidates(
+    services: list[str],
+    *,
+    per_query: int = 5,
+    fetcher: Fetcher | None = None,
+    include_rss: bool = True,
+    directories: list[str] | None = None,
+    directory_limit: int = 15,
+) -> list[DiscoveredCompany]:
+    """Run the per-service query catalog plus optional curated directory pages.
+
+    Sources: operator-curated directories/associations first (highest signal),
+    then web search queries, then Google News RSS (secondary). Each candidate
+    is tagged with the service that found it."""
+    all_c: list[DiscoveredCompany] = []
+    for d in (directories or []):
+        found = discover_from_directory(d, limit=directory_limit, fetcher=fetcher)
+        for c in found:
+            c.industry = c.industry or (services[0] if services else None)
+        all_c.extend(found)
+    for svc in services:
+        queries = QUERY_CATALOG.get(svc, ())
+        for q in queries:
+            found = discover_from_web_search(q, limit=per_query, fetcher=fetcher)
+            for c in found:
+                c.industry = c.industry or svc
+            all_c.extend(found)
+        if include_rss and queries:
+            found = discover_from_rss(queries[0], limit=per_query, fetcher=fetcher)
+            for c in found:
+                c.industry = c.industry or svc
+            all_c.extend(found)
+    return all_c
+
+
+# -- RSS discovery (secondary source) -----------------------------------------------
 
 _RSS_URL = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:EN"
 _DOMAIN_SKIP = {

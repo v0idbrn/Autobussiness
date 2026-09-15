@@ -20,6 +20,16 @@ fetch:
   min_interval_per_domain_s: 1.0
   user_agent: "BAM-ResearchBot/0.1 (+local research; contact: operator@local)"
 
+gemini:
+  enabled: false               # optional opinion layer for ambiguous candidates only.
+                               # Requires GEMINI_API_KEY env var; a key alone never
+                               # enables it. Never decides: auxiliary opinion only.
+  model: "gemini-2.0-flash"    # configurable; not hardcoded truth
+  max_calls_per_run: 10
+  timeout_seconds: 20
+  max_input_chars: 6000        # compact digest only; never raw HTML
+  max_output_tokens: 300
+
 llm:
   enabled: false               # V1 default: 0 calls. Flip to true when provider chosen.
   provider: "none"             # none | openai-compatible (adapter in llm.py)

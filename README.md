@@ -96,6 +96,11 @@ uv run bam doctor
 
 ```bash
 uv run bam discover --source rss --query "accounting firms" --limit 10
+
+# Commercial-intent campaign: curated directories first, then query catalog
+# (per service), publishers/aggregators filtered automatically:
+uv run bam discover --campaign pdf_to_excel excel_cleaning \
+    --directory "https://www.cpadirectory.com/" --per-query 5
 uv run bam research https://example-company.com
 uv run bam leads
 uv run bam next

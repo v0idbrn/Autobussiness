@@ -118,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
                       help="discovery source; 'rss' requires --query")
     disc.add_argument("--query", default=None, help="search query for --source rss")
     disc.add_argument("--limit", type=int, default=10, help="max companies to discover")
+    disc.add_argument("--campaign", nargs="*", metavar="SERVICE",
+                      help="commercial-intent campaign for services "
+                           "(pdf_to_excel | excel_cleaning | qa_automation); "
+                           "web search primary, RSS secondary, publishers filtered")
+    disc.add_argument("--per-query", type=int, default=5,
+                      help="max candidates per catalog query (campaign mode)")
+    disc.add_argument("--directory", action="append", default=[], metavar="URL",
+                      help="curated directory/association/member-list page to mine "
+                           "(campaign mode; repeatable)")
 
     # ingest
     ing = sub.add_parser("ingest", help="ingest discovered companies into the pipeline")
@@ -453,9 +462,36 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "discover":
             from bam.discovery import (
-                deduplicate, discover_from_csv, discover_from_rss,
-                discover_from_text, discover_from_urls, filter_denied,
+                commercial_candidates, deduplicate, discover_from_csv,
+                discover_from_rss, discover_from_text, discover_from_urls,
+                filter_denied, filter_publishers,
             )
+
+            if getattr(args, "campaign", None):
+                # Commercial-intent campaign (Discovery V2): deterministic,
+                # evidence-first. Gemini is NOT called here; ambiguous
+                # candidates are flagged for review via their reports.
+                allowed = commercial_candidates(
+                    args.campaign, per_query=max(1, args.per_query),
+                    directories=list(args.directory or []))
+                allowed = deduplicate(allowed)
+                allowed, denied = filter_denied(allowed)
+                companies_out, publishers = filter_publishers(allowed)
+                print(f"CAMPAIGN: {len(args.campaign)} service(s), "
+                      f"per-query cap {args.per_query}")
+                print(f"CANDIDATES: {len(companies_out) + len(publishers)} "
+                      f"-> companies {len(companies_out)}, "
+                      f"publishers filtered {len(publishers)}")
+                for c, why in publishers:
+                    print(f"  [publisher] {c.domain}: {why}")
+                for c in companies_out:
+                    print(f"  {c.domain:35s} via {c.industry or c.source:16s} "
+                          f"{c.evidence[:60]}")
+                if denied:
+                    print(f"DENIED: {len(denied)} (denylist)")
+                print("\nResearch the interesting ones with:")
+                print("  uv run bam research https://<domain>")
+                return 0
 
             companies = []
             if args.source == "rss":
