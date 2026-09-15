@@ -22,7 +22,7 @@ from typing import Any, Iterator
 
 from bam.config import Config, load_config
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 _SCHEMA = [
     # migration 1 (schema_meta is created by _migrate(); do not re-create here)
@@ -227,6 +227,35 @@ _SCHEMA = [
     );
     CREATE INDEX idx_follow_ups_lead ON follow_ups(lead_id);
     CREATE INDEX idx_follow_ups_due ON follow_ups(due_date);
+    """,
+    # migration 5: commercial feedback loop (sales machine §27/§29-§31).
+    # Experiment records: which sources/queries actually produce qualified,
+    # contactable, positive, won leads — so bad sources get dropped.
+    """
+    CREATE TABLE IF NOT EXISTS campaign_runs (
+        id INTEGER PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        services TEXT NOT NULL,
+        sources TEXT NOT NULL,
+        markets TEXT,
+        queries TEXT,
+        limits_json TEXT,
+        results_json TEXT,
+        lead_ids TEXT
+    );
+    CREATE TABLE IF NOT EXISTS query_stats (
+        id INTEGER PRIMARY KEY,
+        campaign_id INTEGER REFERENCES campaign_runs(id),
+        query TEXT NOT NULL,
+        source TEXT NOT NULL,
+        service TEXT,
+        candidates INTEGER NOT NULL DEFAULT 0,
+        researched INTEGER NOT NULL DEFAULT 0,
+        qualified INTEGER NOT NULL DEFAULT 0,
+        contactable INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_query_stats_query ON query_stats(query);
     """,
 ]
 
@@ -997,6 +1026,128 @@ class Store:
             (_utcnow()[:10],),
         ).fetchall()
         return [_row_to(FollowUpRow, r) for r in rows]
+
+    # -- sales copilot data (daily queue + feedback loop) -------------------------
+
+    def queue_candidates(self) -> list[dict[str, Any]]:
+        """All leads plausibly worth acting on, enriched for the copilot queue:
+        state, score, recommended service, evidence, commercial signals,
+        contactability and the best observed contact. Pure reads."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT l.id, l.state, l.score, l.confidence, l.recommended_service,"
+            " c.name AS company_name, c.domain"
+            " FROM leads l JOIN companies c ON c.id = l.company_id"
+            " WHERE l.state NOT IN ('lost','disqualified','do_not_contact','blocked',"
+            "                      'repeat','onboarding','delivery','delivered')"
+            " ORDER BY l.score DESC").fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            profile = self._profile_signals(d["domain"])
+            d["evidence"] = self.evidence_for_lead(d["id"])
+            d["commercial"] = (profile or {}).get("commercial", {})
+            contacts = self.list_contacts(d["id"])
+            d["contactability"] = (profile or {}).get("commercial", {}).get(
+                "contactability", {})
+            best = None
+            for ct in contacts:
+                if ct.email:
+                    best = ct.email
+                    break
+                if best is None and (ct.channel or ct.phone):
+                    best = ct.channel or ct.phone
+            if best is None:
+                # fall back to observed emails in the profile signals
+                emails = (profile or {}).get("emails") or []
+                best = emails[0] if emails else None
+            d["contact"] = best
+            out.append(d)
+        return out
+
+    def _profile_signals(self, domain: str | None) -> dict[str, Any] | None:
+        """Load signals from the lead profile.json if it exists (read-only)."""
+        if not domain:
+            return None
+        from pathlib import Path
+
+        p = self.config.paths.evidence_dir / domain / "profile.json"
+        if not p.exists():
+            return None
+        try:
+            import json
+            return json.loads(p.read_text(encoding="utf-8")).get("signals", {})
+        except (OSError, ValueError):
+            return None
+
+    def start_campaign(
+        self,
+        *,
+        services: list[str],
+        sources: list[str],
+        markets: list[str] | None = None,
+        queries: list[str] | None = None,
+        limits: dict[str, Any] | None = None,
+    ) -> int:
+        """Record a controlled experiment (§31). Returns the campaign id."""
+        import json as _json
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO campaign_runs (started_at, services, sources, markets,"
+                " queries, limits_json) VALUES (?,?,?,?,?,?)",
+                (_utcnow(), _json.dumps(services), _json.dumps(sources),
+                 _json.dumps(markets or []), _json.dumps(queries or []),
+                 _json.dumps(limits or {}, sort_keys=True)))
+            return int(cur.lastrowid)
+
+    def finish_campaign(
+        self,
+        campaign_id: int,
+        *,
+        results: dict[str, Any],
+        lead_ids: list[int],
+        query_stats: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Close the experiment with measured results (§30: learn from outcomes)."""
+        import json as _json
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE campaign_runs SET results_json = ?, lead_ids = ? WHERE id = ?",
+                (_json.dumps(results, ensure_ascii=False, sort_keys=True),
+                 _json.dumps(lead_ids), campaign_id))
+            for qs in (query_stats or []):
+                conn.execute(
+                    "INSERT INTO query_stats (campaign_id, query, source, service,"
+                    " candidates, researched, qualified, contactable, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (campaign_id, str(qs.get("query", ""))[:200],
+                     str(qs.get("source", ""))[:60], qs.get("service"),
+                     int(qs.get("candidates", 0)), int(qs.get("researched", 0)),
+                     int(qs.get("qualified", 0)), int(qs.get("contactable", 0)),
+                     _utcnow()))
+            self.audit(conn, actor="agent", action="campaign.run",
+                       entity_type="campaign", entity_id=campaign_id,
+                       payload={"results": results, "leads": lead_ids})
+
+    def source_quality(self) -> list[dict[str, Any]]:
+        """Per-source funnel: candidates → researched → qualified → contactable.
+        Deterministic analytics over recorded campaigns (§29)."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT source, SUM(candidates) AS candidates, SUM(researched) AS researched,"
+            " SUM(qualified) AS qualified, SUM(contactable) AS contactable"
+            " FROM query_stats GROUP BY source ORDER BY qualified DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def query_quality(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Per-query funnel, best first (§30). Only meaningful with data."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT query, service, SUM(candidates) AS candidates,"
+            " SUM(researched) AS researched, SUM(qualified) AS qualified"
+            " FROM query_stats GROUP BY query ORDER BY qualified DESC, researched DESC"
+            " LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
 
     def next_lead(self) -> dict[str, Any] | None:
         """Find the highest-priority lead needing action today.

@@ -468,16 +468,40 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             if getattr(args, "campaign", None):
-                # Commercial-intent campaign (Discovery V2): deterministic,
-                # evidence-first. Gemini is NOT called here; ambiguous
-                # candidates are flagged for review via their reports.
+                # Commercial-intent campaign (Discovery V2 + §30-§31): the run
+                # is RECORDED so source/query quality accumulates over time.
+                cfg = load_config()
+                dlim = (cfg.raw.get("discovery") or {})
+                max_candidates = int(dlim.get("max_candidates", 50))
+                store = _store()
+                campaign_id = store.start_campaign(
+                    services=list(args.campaign),
+                    sources=("directory" if args.directory else []) + ["web_search", "rss"],
+                    markets=list(dlim.get("markets", [])) or None,
+                    limits={"per_query": args.per_query,
+                            "max_candidates": max_candidates})
                 allowed = commercial_candidates(
                     args.campaign, per_query=max(1, args.per_query),
                     directories=list(args.directory or []))
-                allowed = deduplicate(allowed)
+                allowed = deduplicate(allowed)[:max_candidates]
                 allowed, denied = filter_denied(allowed)
                 companies_out, publishers = filter_publishers(allowed)
-                print(f"CAMPAIGN: {len(args.campaign)} service(s), "
+                # per-source funnel stats for the feedback loop
+                per_source: dict[str, dict[str, int]] = {}
+                for c in companies_out:
+                    s = per_source.setdefault(c.source, {"candidates": 0})
+                    s["candidates"] += 1
+                store.finish_campaign(
+                    campaign_id,
+                    results={"candidates": len(companies_out),
+                             "publishers_filtered": len(publishers),
+                             "denied": len(denied)},
+                    lead_ids=[],
+                    query_stats=[
+                        {"query": "(campaign)", "source": src,
+                         "service": args.campaign[0], **counts}
+                        for src, counts in per_source.items()] or None)
+                print(f"CAMPAIGN #{campaign_id}: {len(args.campaign)} service(s), "
                       f"per-query cap {args.per_query}")
                 print(f"CANDIDATES: {len(companies_out) + len(publishers)} "
                       f"-> companies {len(companies_out)}, "
@@ -702,14 +726,37 @@ def main(argv: list[str] | None = None) -> int:
                 signals=signals,
             )
 
+            # WHY THIS LEAD + tier + productized offer (sales machine §3/§10-§12)
+            from bam.copilot import explain_why, suggested_contact_roles
+            from bam.signals import recommend_offer
+
+            commercial = (signals.get("commercial") or {})
+            contactability = commercial.get("contactability") or {}
+            why = explain_why(
+                {"id": lead.id, "state": lead.state, "score": lead.score,
+                 "recommended_service": lead.recommended_service,
+                 "company_name": lead.company_name, "domain": lead.domain},
+                evidence, commercial, contactability)
+            offer = recommend_offer(lead.recommended_service)
+
             print(f"SALES BRIEF — {lead.company_name}")
             print(f"{'=' * 50}")
             print(f"Who:              {brief.who}")
             print(f"What they do:     {brief.what_they_do}")
-            print(f"Why us:           {brief.why_us}")
-            print(f"Evidence:         {brief.evidence_summary}")
+            print(f"Tier:             {why.headline}")
+            print("WHY PURSUE:")
+            for b in why.bullets:
+                print(f"  - {b}")
+            for u in why.unknowns:
+                print(f"  - UNKNOWN: {u}")
+            if offer:
+                print(f"WHAT TO SELL:     {offer['name']}")
+                print(f"  offer:            {offer['pitch']}")
             print(f"Service:          {brief.recommended_service}")
+            print(f"Evidence:         {brief.evidence_summary}")
             print(f"Contact:          {brief.contact_path}")
+            if lead.recommended_service:
+                print(f"Contact roles:    {', '.join(suggested_contact_roles(lead.recommended_service))}")
             print(f"Message goal:     {brief.first_message_goal}")
             print(f"CTA:              {brief.suggested_cta}")
             print(f"Do NOT claim:     {brief.what_not_to_claim}")
@@ -889,6 +936,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Summary:         {classification.summary}")
             print(f"  Next action:     {classification.next_action}")
             print(f"  Needs response:  {classification.needs_response}")
+            # Objection playbook (sales machine §20): WHAT THIS MEANS / WHAT TO SAY
+            from bam.copilot import playbook_for
+            play = playbook_for(classification.classification)
+            if play:
+                print()
+                print("  PLAYBOOK")
+                print(f"    what this means : {play['means']}")
+                print(f"    recommended say : {play['say']}")
+                print(f"    next            : {play['next']}")
+                if play["quote_needed"]:
+                    print(f"    quote needed    : YES — run: bam quote {lead.id}")
             return 0
 
         if args.command == "classify-response":
@@ -900,6 +958,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Summary:         {classification.summary}")
             print(f"Next action:     {classification.next_action}")
             print(f"Needs response:  {classification.needs_response}")
+            from bam.copilot import playbook_for
+            play = playbook_for(classification.classification)
+            if play:
+                print()
+                print("PLAYBOOK")
+                print(f"  what this means : {play['means']}")
+                print(f"  recommended say : {play['say']}")
+                print(f"  next            : {play['next']}")
             return 0
 
         if args.command == "followups":
@@ -1003,73 +1069,62 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "next":
+            # Daily Sales Queue (sales machine §17): the commercial cockpit.
+            # WHAT matters, WHY, contact, NEXT ACTION — with anti-spam caps.
+            from bam.copilot import build_daily_queue, playbook_for
+            from bam.signals import recommend_offer
+
             store = _store()
-            next_lead = store.next_lead()
+            followups = store.pending_follow_ups()
+            candidates = store.queue_candidates()
+            entries, stats = build_daily_queue(candidates, limit=5)
 
-            if not next_lead:
-                print("NO PENDING ACTIONS")
-                print()
-                print("All leads are up to date. Run 'bam discover' to find new companies.")
-                return 0
-
-            lead = store.get_lead(next_lead["id"])
-            if not lead:
-                print("error: lead not found", file=sys.stderr)
-                return 2
-
-            # Determine recommended action based on state
-            actions = {
-                "approval_required": (
-                    "REVIEW AND APPROVE",
-                    "This lead is qualified and ready for outreach approval.",
-                    f"Run: bam sales-brief {lead.id}  (to see the sales brief)\n"
-                    f"     bam draft-outreach {lead.id}  (to see the outreach message)\n"
-                    f"     bam approve-contact {lead.id}  (to approve outreach)",
-                ),
-                "replied": (
-                    "RESPOND TO PROSPECT",
-                    "This prospect has replied and needs your response.",
-                    f"Read their response in interactions, then reply manually.\n"
-                    f"Run: bam lead {lead.id}  (to see full details)",
-                ),
-                "negotiating": (
-                    "PROGRESS THE DEAL",
-                    "This prospect is interested. Move towards a quote or next step.",
-                    f"Run: bam quote {lead.id}  (to generate a quote)\n"
-                    f"     bam lead {lead.id}  (to see full details)",
-                ),
-                "qualified": (
-                    "PREPARE OUTREACH",
-                    "This lead is qualified. Prepare your outreach message.",
-                    f"Run: bam sales-brief {lead.id}  (to see the sales brief)\n"
-                    f"     bam draft-outreach {lead.id}  (to generate outreach draft)",
-                ),
-                "follow_up": (
-                    "FOLLOW UP",
-                    "This lead needs follow-up re-engagement.",
-                    f"Run: bam lead {lead.id}  (to see full details)\n"
-                    f"Then contact them manually.",
-                ),
-            }
-
-            action = actions.get(lead.state, ("REVIEW", "This lead needs attention.", ""))
-
-            print(f"NEXT ACTION")
-            print(f"{'=' * 50}")
-            print(f"  Company:  {lead.company_name}")
-            print(f"  Domain:   {lead.domain or '-'}")
-            print(f"  State:    {lead.state}")
-            print(f"  Score:    {lead.score if lead.score is not None else '-'}")
-            print(f"  Service:  {lead.recommended_service or '-'}")
-            print(f"  Priority: {action[0]}")
+            print("TODAY'S SALES QUEUE")
+            print("=" * 60)
+            if not entries:
+                print("(empty) Run 'bam discover --campaign <service>' to find")
+                print("companies, then 'bam research <url>' to investigate them.")
+            shown = 0
+            for e in entries:
+                if e.tier == "D" and shown >= 5:
+                    continue  # never bury the operator in rejects
+                shown += 1
+                print(f"\n{shown}. {e.company}" + (f" ({e.domain})" if e.domain else ""))
+                print(f"   STATE: {e.state}  SCORE: {e.score if e.score is not None else '-'}"
+                      f"  TIER: {e.tier}  ACTION: {e.action}")
+                if e.service:
+                    offer = recommend_offer(e.service)
+                    print(f"   SELL: {offer['name'] if offer else e.service}")
+                if e.contact:
+                    print(f"   CONTACT: {e.contact}")
+                if e.why.bullets:
+                    print("   WHY:")
+                    for b in e.why.bullets[:3]:
+                        print(f"     - {b}")
+                if e.why.unknowns:
+                    print("   UNKNOWN:")
+                    for u in e.why.unknowns[:2]:
+                        print(f"     - {u}")
+                if e.tier == "D":
+                    break
             print()
-            print(f"  WHY:")
-            print(f"  {action[1]}")
-            print()
-            if action[2]:
-                print(f"  WHAT TO DO:")
-                for line in action[2].split("\n"):
-                    print(f"  {line}")
+            print("RECOMMENDED TODAY")
+            print("=" * 60)
+            contactable_a = sum(1 for e in entries if e.tier == "A")
+            research_b = sum(1 for e in entries if e.tier == "B")
+            print(f"Contact-ready (A): {contactable_a}   Needs research (B): {research_b}")
+            print(f"Follow-ups due: {len(followups)}")
+            if followups:
+                for fu in followups[:3]:
+                    lead = store.get_lead(fu.lead_id)
+                    company = lead.company_name if lead else f"lead#{fu.lead_id}"
+                    print(f"  FOLLOW UP TODAY: {company} — {fu.kind}"
+                          f" (due {fu.due_date})")
+                    print(f"    reason: {(fu.reason or '-')[:90]}")
+                    print(f"    action: {(fu.recommended_action or '-')[:90]}")
+            quotes_pending = store._conn().execute(
+                "SELECT COUNT(*) FROM quotes WHERE state='approved'").fetchone()[0]
+            print(f"Quotes pending: {quotes_pending}")
             return 0
 
         if args.command == "clients":

@@ -324,6 +324,82 @@ def score_contactability(signals: dict[str, Any]) -> dict[str, Any]:
             "has_form": bool(signals.get("has_contact_form"))}
 
 
+# -- intent signals (Sales Machine §6): context-gated, never one keyword -----------
+
+# Very strong intent phrases; weight 3.
+_INTENT_STRONG = (
+    "looking for", "need help with", "outsourcing", "outsource",
+    "we are hiring", "is hiring", "seeking a partner", "managed service",
+    "bpo", "data entry services", "data processing services",
+    "document processing services", "test automation services",
+)
+# Context cues that upgrade a weak signal (having Excel/PDFs) into an intent:
+# 'uses Excel' alone is NOT intent; 'uses Excel for monthly reporting' is.
+_INTENT_CONTEXT = (
+    "manual", "recurring", "every month", "monthly", "batch", "backlog",
+    "time consuming", "error prone", "volume", "processing", "workflow",
+    "reporting", "reconciliation", "migration", "cleanup", "audit",
+)
+
+# Role keywords by service for decision-maker/contact research (§13).
+CONTACT_PRIORITY_ROLES: dict[str, tuple[str, ...]] = {
+    "pdf_to_excel": ("operations", "finance", "accounting", "founder", "owner"),
+    "excel_cleaning": ("operations", "finance", "data", "accounting", "founder", "owner"),
+    "qa_automation": ("cto", "engineering", "qa", "product", "founder", "owner"),
+}
+
+
+def extract_intent_signals(text: str) -> dict[str, Any]:
+    """Commercial intent from page text. Deterministic, context-gated:
+    using Excel/PDFs alone is NOT intent — a pain/ops context cue must
+    co-occur for weak signals to count. Never invents; only reports."""
+    t = _norm(text)
+    strong = [p for p in _INTENT_STRONG if p in t]
+    context = [c for c in _INTENT_CONTEXT if c in t]
+    # context-gated tool mentions: a tool word plus an ops cue on the page
+    gated = []
+    for tool in ("excel", "csv", "pdf", "spreadsheet"):
+        if tool in t and context:
+            gated.append(f"{tool}+context")
+    score = 3 * len(strong) + 2 * (1 if gated else 0)
+    return {"strong": strong[:5], "context": context[:5],
+            "context_gated_tools": gated, "score": min(9, score)}
+
+
+# -- productized offers (§12): what to sell, derived from evidence -----------------
+
+OFFERS: dict[str, dict[str, str]] = {
+    "pdf_to_excel": {
+        "name": "PDF → Excel Conversion",
+        "pitch": ("Convert recurring PDF documents (invoices, reports, statements) "
+                  "into structured, auditable Excel files — batch processing, "
+                  "per-document audit trail, fully local processing."),
+        "evidence_phrase": "document-heavy workflows (invoices/reports)",
+    },
+    "excel_cleaning": {
+        "name": "Excel/CSV Cleaning & Validation",
+        "pitch": ("Clean and validate recurring Excel/CSV exports before reporting: "
+                  "duplicate detection, format normalization, validation rules, "
+                  "audit report of every fix."),
+        "evidence_phrase": "recurring spreadsheet/CSV workflows",
+    },
+    "qa_automation": {
+        "name": "Website QA Automation Audit",
+        "pitch": ("Automated QA audit of your web application: regression checks, "
+                  "form testing, accessibility basics, API checks — with an "
+                  "evidence report of every finding."),
+        "evidence_phrase": "web product with active development",
+    },
+}
+
+
+def recommend_offer(service_id: str | None) -> dict[str, str] | None:
+    """The productized offer to sell, or None when no service fits."""
+    if not service_id:
+        return None
+    return OFFERS.get(service_id)
+
+
 # -- ambiguity gate for the optional Gemini layer (§7) ------------------------------
 
 def should_ask_gemini(cp: CommercialProfile) -> bool:

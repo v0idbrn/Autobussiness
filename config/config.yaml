@@ -9,6 +9,16 @@ backup:
   keep: 5                      # verified backups retained; older ones pruned
                                # automatically after each bam backup
 
+discovery:
+  max_candidates: 50           # hard cap per campaign run (anti-crawl)
+  max_requests_per_domain: 3   # per run; engines/sources that block skip cleanly
+  timeout_seconds: 15
+  markets: []                  # e.g. [Argentina, LATAM, US, Europe]; empty = worldwide
+
+sales:
+  max_daily_outreach: 5        # anti-spam: contact-actions recommended per day
+  queue_top: 5                 # leads shown in the daily queue
+
 fetch:
   max_pages: 5                 # homepage + up to max_subpages subpages
   max_subpages: 4              # /about, /services, /team, /contact in research
