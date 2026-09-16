@@ -103,6 +103,7 @@ class Fetcher:
         )
         self._requests_made = 0
         self._requests_by_domain: dict[str, int] = {}
+        self._last_request_time_by_domain: dict[str, float] = {}
 
     def close(self) -> None:
         self._client.close()
@@ -123,6 +124,13 @@ class Fetcher:
         else:
             pinned_ip = resolve_public_host(hostname)
 
+        # Rate limiting: wait if needed
+        min_interval = self.config.fetch.min_interval_per_domain_s
+        last_time = self._last_request_time_by_domain.get(hostname, 0)
+        elapsed = time.monotonic() - last_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+
         self._requests_made += 1
         domain_count = self._requests_by_domain.get(hostname, 0) + 1
         self._requests_by_domain[hostname] = domain_count
@@ -130,6 +138,8 @@ class Fetcher:
             raise FetchError(
                 f"per-domain request cap reached for {hostname} ({self.config.fetch.max_requests_per_domain})"
             )
+
+        self._last_request_time_by_domain[hostname] = time.monotonic()
 
         request = self._client.build_request("GET", url)
         # Pin the connection to the verified public IP: replace the URL host,

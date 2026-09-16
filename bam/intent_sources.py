@@ -319,9 +319,9 @@ def discover_intent_from_feeds(
                 fetcher=fetcher, limit=20)
             candidates.extend(jc)
             failures.extend(jc_fail)
-            # Reddit r/forhire
-            reddit, reddit_fail = discover_intent_from_reddit_forhire(
-                fetcher=fetcher, limit=30)
+            # Reddit (multiple subreddits)
+            reddit, reddit_fail = discover_intent_from_reddit(
+                fetcher=fetcher, services=services, limit_per_sub=15)
             candidates.extend(reddit)
             failures.extend(reddit_fail)
             # Freelancer.com
@@ -681,9 +681,44 @@ def discover_intent_from_jobicy(
     return candidates, failures
 
 
-# -- Reddit r/forhire RSS (§24 Tier 1) -------------------------------------------
+# -- Reddit RSS (§24 Tier 1) ----------------------------------------------------
 
-REDDIT_FORHIRE_RSS = "https://www.reddit.com/r/forhire/.rss"
+# Subreddits organized by service relevance (top 5 per service for rate limit safety)
+REDDIT_SUBREDDITS: dict[str, tuple[dict[str, str], ...]] = {
+    "pdf_to_excel": (
+        {"id": "r_forhire", "name": "r/forhire", "subreddit": "forhire",
+         "intent_class": "hiring"},
+        {"id": "r_dataentry", "name": "r/DataEntry", "subreddit": "DataEntry",
+         "intent_class": "service_request"},
+        {"id": "r_excel", "name": "r/Excel", "subreddit": "Excel",
+         "intent_class": "help_request"},
+        {"id": "r_freelance", "name": "r/freelance", "subreddit": "freelance",
+         "intent_class": "hiring"},
+    ),
+    "excel_cleaning": (
+        {"id": "r_excel", "name": "r/Excel", "subreddit": "Excel",
+         "intent_class": "help_request"},
+        {"id": "r_googlesheets", "name": "r/GoogleSheets", "subreddit": "GoogleSheets",
+         "intent_class": "help_request"},
+        {"id": "r_bookkeeping", "name": "r/Bookkeeping", "subreddit": "Bookkeeping",
+         "intent_class": "help_request"},
+        {"id": "r_forhire", "name": "r/forhire", "subreddit": "forhire",
+         "intent_class": "hiring"},
+    ),
+    "qa_automation": (
+        {"id": "r_qualityassurance", "name": "r/QualityAssurance", "subreddit": "QualityAssurance",
+         "intent_class": "hiring"},
+        {"id": "r_selenium", "name": "r/Selenium", "subreddit": "Selenium",
+         "intent_class": "help_request"},
+        {"id": "r_playwright", "name": "r/Playwright", "subreddit": "Playwright",
+         "intent_class": "help_request"},
+        {"id": "r_cypress", "name": "r/Cypress", "subreddit": "Cypress",
+         "intent_class": "help_request"},
+    ),
+}
+
+# Generic Reddit RSS URL pattern
+_REDDIT_RSS_URL = "https://www.reddit.com/r/{subreddit}/.rss"
 
 # Title patterns that signal service offers (not hiring)
 _OFFER_PATTERNS = re.compile(
@@ -696,13 +731,13 @@ _HIRING_PATTERNS = re.compile(
 )
 
 
-def parse_reddit_forhire_rss(xml_bytes: bytes, source_url: str, limit: int = 30
-                             ) -> list[OpportunityCandidate]:
-    """Parse Reddit r/forhire RSS into OpportunityCandidate items.
+def parse_reddit_rss(xml_bytes: bytes, source_url: str,
+                     intent_class: str = "hiring",
+                     limit: int = 30) -> list[OpportunityCandidate]:
+    """Parse Reddit RSS (Atom) into OpportunityCandidate items.
 
-    [For Hire] posts = service providers offering skills.
-    [Hiring] posts = companies looking for workers (hiring signal).
-    Only [Hiring] posts are commercial intent for BAM services.
+    For hiring-focused subreddits (r/forhire): [Hiring] posts only.
+    For help-focused subreddits (r/Excel): posts asking for help with our services.
     """
     import xml.etree.ElementTree as ET
 
@@ -731,12 +766,9 @@ def parse_reddit_forhire_rss(xml_bytes: bytes, source_url: str, limit: int = 30
         if not title or not link:
             continue
 
-        # Skip [For Hire] posts — those are people offering, not buying
-        if _OFFER_PATTERNS.search(title):
+        # For hiring-focused subs: skip [For Hire] posts
+        if intent_class == "hiring" and _OFFER_PATTERNS.search(title):
             continue
-
-        # [Hiring] posts are the signal
-        is_hiring = bool(_HIRING_PATTERNS.search(title))
 
         try:
             final_url = validate_url(link)
@@ -749,7 +781,7 @@ def parse_reddit_forhire_rss(xml_bytes: bytes, source_url: str, limit: int = 30
         intent = score_intent(text)
 
         # Hiring posts without service keywords still carry medium intent
-        if intent.tier in ("none", "weak") and is_hiring:
+        if intent.tier in ("none", "weak"):
             intent = IntentMatchUpgrade(intent, title_clean)
         if intent.tier in ("none",):
             continue
@@ -758,40 +790,57 @@ def parse_reddit_forhire_rss(xml_bytes: bytes, source_url: str, limit: int = 30
             company=author or None,
             company_url=None,
             source_url=final_url,
-            source_type="job_board:reddit_forhire",
+            source_type=f"reddit:{source_url.split('/r/')[-1].split('/')[0] if '/r/' in source_url else 'unknown'}",
             published_at=None,
             title=title_clean,
             snippet=text[:400],
             intent=intent,
-            evidence=[{"kind": "job_post", "status": "OBSERVED",
+            evidence=[{"kind": "reddit_post", "status": "OBSERVED",
                         "url": final_url, "excerpt": title_clean[:160]}],
         ))
     return out
 
 
-def discover_intent_from_reddit_forhire(
-    *, fetcher: Fetcher | None = None, limit: int = 30,
+def discover_intent_from_reddit(
+    *,
+    fetcher: Fetcher | None = None,
+    services: list[str] | None = None,
+    limit_per_sub: int = 15,
 ) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
-    """Fetch Reddit r/forhire RSS; failures are skips, not crashes."""
+    """Fetch multiple Reddit subreddits; failures are skips, not crashes."""
     should_close = False
     if fetcher is None:
         fetcher = Fetcher()
         should_close = True
     candidates: list[OpportunityCandidate] = []
     failures: list[dict[str, str]] = []
+
+    # Deduplicate subreddits across services
+    seen_subs: set[str] = set()
+    subs_to_fetch: list[tuple[str, str, str]] = []  # (id, url, intent_class)
+
+    for svc in (services or list(REDDIT_SUBREDDITS)):
+        for sub in REDDIT_SUBREDDITS.get(svc, ()):
+            if sub["subreddit"] not in seen_subs:
+                seen_subs.add(sub["subreddit"])
+                url = _REDDIT_RSS_URL.format(subreddit=sub["subreddit"])
+                subs_to_fetch.append((sub["id"], url, sub["intent_class"]))
+
     try:
-        try:
-            res = fetcher.fetch(REDDIT_FORHIRE_RSS)
-        except Exception as exc:
-            failures.append({"source": "reddit_forhire",
-                             "reason": f"fetch failed: {exc}"})
-            return candidates, failures
-        if res.status != 200:
-            failures.append({"source": "reddit_forhire",
-                             "reason": f"blocked: HTTP {res.status}"})
-            return candidates, failures
-        candidates.extend(parse_reddit_forhire_rss(
-            res.content, source_url=REDDIT_FORHIRE_RSS, limit=limit))
+        for sub_id, url, intent_class in subs_to_fetch:
+            try:
+                res = fetcher.fetch(url)
+            except Exception as exc:
+                failures.append({"source": sub_id,
+                                 "reason": f"fetch failed: {exc}"})
+                continue
+            if res.status != 200:
+                failures.append({"source": sub_id,
+                                 "reason": f"blocked: HTTP {res.status}"})
+                continue
+            candidates.extend(parse_reddit_rss(
+                res.content, source_url=url,
+                intent_class=intent_class, limit=limit_per_sub))
     finally:
         if should_close:
             fetcher.close()
