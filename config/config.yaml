@@ -31,7 +31,7 @@ fetch:
   max_redirects: 5
   timeout_s: 15
   max_requests_per_domain: 8   # per run (robots + homepage + 4 subpages + headroom)
-  max_run_seconds: 120
+  max_run_seconds: 300         # 5 minutes for multi-source campaigns
   min_interval_per_domain_s: 1.0
   user_agent: "BAM-ResearchBot/0.1 (+local research; contact: operator@local)"
 

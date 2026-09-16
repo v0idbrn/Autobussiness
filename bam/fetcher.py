@@ -102,6 +102,7 @@ class Fetcher:
             headers={"User-Agent": limits.user_agent},
         )
         self._requests_made = 0
+        self._requests_by_domain: dict[str, int] = {}
 
     def close(self) -> None:
         self._client.close()
@@ -123,9 +124,11 @@ class Fetcher:
             pinned_ip = resolve_public_host(hostname)
 
         self._requests_made += 1
-        if self._requests_made > self.config.fetch.max_requests_per_domain:
+        domain_count = self._requests_by_domain.get(hostname, 0) + 1
+        self._requests_by_domain[hostname] = domain_count
+        if domain_count > self.config.fetch.max_requests_per_domain:
             raise FetchError(
-                f"per-run request cap reached ({self.config.fetch.max_requests_per_domain})"
+                f"per-domain request cap reached for {hostname} ({self.config.fetch.max_requests_per_domain})"
             )
 
         request = self._client.build_request("GET", url)

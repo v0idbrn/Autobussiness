@@ -6,6 +6,7 @@ Exit codes: 0 ok · 1 error · 2 usage/config (mirrors service convention).
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -1908,7 +1909,6 @@ def main(argv: list[str] | None = None) -> int:
                 if not csv_path.exists():
                     print(f"ERROR: CSV file not found: {csv_path}", file=sys.stderr)
                     return 1
-                import csv
                 with open(csv_path, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:

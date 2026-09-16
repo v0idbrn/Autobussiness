@@ -1,0 +1,212 @@
+[
+  {
+    "company": "Freelancer.com Project 40693872",
+    "url": "https://www.freelancer.com/projects/copywriting/urgent-data-entry-expert-needed",
+    "title": "Urgent Data Entry Expert Needed – Excel, Copy Paste & PDF to Excel",
+    "snippet": "Project ID 40693872, Sep 6 2026, Rs 3000-7000 INR/hour, email visible, open for bidding. Direct PDF to Excel conversion need.",
+    "service": "pdf_to_excel",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "Freelancer.com Project 40691768",
+    "url": "https://www.freelancer.com/projects/data-entry/PDF-Excel-Data-Extraction-40691768.html",
+    "title": "PDF to Excel Data Extraction",
+    "snippet": "Project ID 40691768, Sep 2026, defined budget, 8+ proposals. Direct PDF to Excel extraction service request.",
+    "service": "pdf_to_excel",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "n8n Community User",
+    "url": "https://community.n8n.io/t/seeking-estimates-n8n-developer-for-a-small-rfq-to-quote-prototype/312281",
+    "title": "Seeking estimates: n8n developer for RFQ-to-quote prototype",
+    "snippet": "Sep 10 2026, PDF to Excel extraction needed, budget 280-1800 GBP. Active request for help with document processing.",
+    "service": "pdf_to_excel",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "n8n_community"
+  },
+  {
+    "company": "Freelancer.com Project 40686857",
+    "url": "https://www.freelancer.com/projects/data-cleansing/paper-docs-excel-entry-edt-40686857",
+    "title": "Paper Docs to Excel Entry",
+    "snippet": "Sep 2 2026, $250-750 USD, paper documents to Excel. Direct data entry service request.",
+    "service": "pdf_to_excel",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "Freelancer.com Project 40695909",
+    "url": "https://www.freelancer.com/projects/data-analysis/excel-data-cleanup-charts",
+    "title": "Excel Data Cleanup & Charts",
+    "snippet": "Sep 7 2026, Rs 12500-37500 INR, 8 proposals, raw sales dataset transformation. Direct data cleaning need.",
+    "service": "excel_cleaning",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "Freelancer.com Project 40656192",
+    "url": "https://www.freelancer.com/projects/data-entry/financial-analysis-data-entry-expert",
+    "title": "Financial Analysis and Data Entry Expert",
+    "snippet": "Aug 18 2026, $10-30 USD, clean and organize raw financial data in Excel. Direct data cleaning need.",
+    "service": "excel_cleaning",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "PeoplePerHour Client",
+    "url": "https://www.peopleperhour.com/freelance-jobs/shopify-csv-product-data-specialist",
+    "title": "Shopify CSV product data specialist",
+    "snippet": "Sep 2026, $162, 49 proposals, audit and correct 500 products comparing supplier CSV feeds. Direct CSV cleanup need.",
+    "service": "excel_cleaning",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "peopleperhour"
+  },
+  {
+    "company": "PeoplePerHour Client",
+    "url": "https://www.peopleperhour.com/freelance-data+analysis-jobs",
+    "title": "Research & Data Entry",
+    "snippet": "Sep 2026, 174 GBP, 2095 records of campsites to enrich with email, website, phone. Data entry and enrichment need.",
+    "service": "excel_cleaning",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "peopleperhour"
+  },
+  {
+    "company": "Freelancer.com User",
+    "url": "https://www.vn.freelancer.com/jobs/data-cleansing",
+    "title": "Ongoing spreadsheet cleanup support",
+    "snippet": "Sep 2026, ongoing work, Google Sheets/Excel, scrubbing cells for final clean file. Direct data cleaning need.",
+    "service": "excel_cleaning",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "freelancer_com"
+  },
+  {
+    "company": "Upwork Client",
+    "url": "https://www.upwork.com/freelance-jobs/apply/CRM-Data-Entry-Specialist-Excel-Data-Cleaning_~022093390317300293846/",
+    "title": "CRM Data Entry Specialist & Excel Data Cleaning",
+    "snippet": "Aug 28 2026, $5 fixed price, CRM data cleanup. Direct data cleaning need.",
+    "service": "excel_cleaning",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "upwork"
+  },
+  {
+    "company": "COMPR.AR / Ministerio de Economia",
+    "url": "https://www.boletinoficial.gob.ar/detalleAviso/tercera/2417090/20260907",
+    "title": "Concurso Publico 0002/2026 - QA Automatico SIAF",
+    "snippet": "Sep 7 2026, Ministerio de Economia, QA Automatico para ecosistema SIAF, presentacion hasta Sep 21 2026. Government QA automation contract.",
+    "service": "qa_automation",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "boletin_oficial_ar"
+  },
+  {
+    "company": "Teach Your Monster",
+    "url": "https://testdevjobs.com/job/teach-your-monster-freelance-senior-qa-tester-mobile-web-kids-games-24310/",
+    "title": "Freelance Senior QA Tester – Mobile, Web, Kids Games",
+    "snippet": "Aug 30 2026, contract freelance, 2-4 days/week, remote UK, 3 months initial. Direct QA testing need.",
+    "service": "qa_automation",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "testdevjobs"
+  },
+  {
+    "company": "Guru Client",
+    "url": "https://www.guru.com/jobs/qa-web-application-tester/2120589",
+    "title": "QA / Web Application Tester",
+    "snippet": "Aug 24 2026, freelance project-based QA testing for automotive shop management SaaS platform. Direct QA testing need.",
+    "service": "qa_automation",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "guru"
+  },
+  {
+    "company": "Upwork Client",
+    "url": "https://www.upwork.com/freelance-jobs/apply/Engineer-Automation-Web_~022099510970993622381/",
+    "title": "QA Engineer (Automation) – Web",
+    "snippet": "Sep 15 2026, short-term assignment, troubleshoot and fix existing automation test scripts. Direct QA automation need.",
+    "service": "qa_automation",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "upwork"
+  },
+  {
+    "company": "Quantum Technologies Inc.",
+    "url": "https://torre.ai/post/GdjMbDew-quantum-technologies-inc-qa-engineer-sdet-contract-remote",
+    "title": "QA Engineer / SDET (Contract) - Remote",
+    "snippet": "Sep 1 2026, contract remote, engineering testing frameworks for AV systems. Direct QA automation need.",
+    "service": "qa_automation",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "torre_ai"
+  },
+  {
+    "company": "Testlio",
+    "url": "https://euroremotetalent.com/remote-jobs/remote-qa-analyst-future-roles-testlio",
+    "title": "QA Analyst (Future Roles) at Testlio",
+    "snippet": "Sep 1 2026, contract remote, open to Argentina, Brazil, Mexico, Poland. QA testing platform.",
+    "service": "qa_automation",
+    "intent_tier": "medium",
+    "intent_score": 60,
+    "source": "euroremotetalent"
+  },
+  {
+    "company": "Red Global / Client",
+    "url": "https://lavori.co.it/test-automation_monza-c290373/2026-08-red-global_i4188588689",
+    "title": "Test Automation Specialist (Python)",
+    "snippet": "Aug 30 2026, 12 months + extension, 100% remote Italy, P.Iva / B2B Contract / Freelance. Direct test automation need.",
+    "service": "qa_automation",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "lavori_co_it"
+  },
+  {
+    "company": "OpenTrain AI",
+    "url": "https://www.opentrain.ai/jobs/qa-engineer--cmtinmppp00000aku0g59hik3/",
+    "title": "QA Engineer for AI Technical Evaluation",
+    "snippet": "Sep 1 2026, contractor role, $60-$112 per hour, testing and code output review. Direct QA need.",
+    "service": "qa_automation",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "opentrain_ai"
+  },
+  {
+    "company": "Workana Client",
+    "url": "https://bebee.com/ar/jobs/analista-de-soporte-contable-freelance-por-hora-workana--fj-2327365816",
+    "title": "Analista de Soporte Contable - Freelance por hora",
+    "snippet": "Aug 24 2026, hasta 23/10/2026, 100% remoto, soporte contable con Excel/data. Financial data processing need.",
+    "service": "excel_cleaning",
+    "intent_tier": "strong",
+    "intent_score": 80,
+    "source": "workana"
+  },
+  {
+    "company": "Coconala Client",
+    "url": "https://coconala.com/requests/5249411",
+    "title": "PDFデータをExcelに変換する業務担当者を募集します",
+    "snippet": "Sep 3 2026, 2000 JPY, deadline Sep 17 2026, 7 applicants. Direct PDF to Excel conversion need (Japan).",
+    "service": "pdf_to_excel",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "coconala"
+  },
+  {
+    "company": "Work.lk Client",
+    "url": "https://www.work.lk/project/data-entry-operator-needed/",
+    "title": "Data Entry Operator needed",
+    "snippet": "Aug 19 2026, Rs 2000/day, scanned PDF to Excel. Direct data entry need (Sri Lanka).",
+    "service": "pdf_to_excel",
+    "intent_tier": "explicit",
+    "intent_score": 100,
+    "source": "work_lk"
+  }
+]

@@ -319,6 +319,21 @@ def discover_intent_from_feeds(
                 fetcher=fetcher, limit=20)
             candidates.extend(jc)
             failures.extend(jc_fail)
+            # Reddit r/forhire
+            reddit, reddit_fail = discover_intent_from_reddit_forhire(
+                fetcher=fetcher, limit=30)
+            candidates.extend(reddit)
+            failures.extend(reddit_fail)
+            # Freelancer.com
+            fl, fl_fail = discover_intent_from_freelancer(
+                fetcher=fetcher, limit_per_category=10)
+            candidates.extend(fl)
+            failures.extend(fl_fail)
+            # Workana
+            wa, wa_fail = discover_intent_from_workana(
+                fetcher=fetcher, limit_per_category=10)
+            candidates.extend(wa)
+            failures.extend(wa_fail)
         for lang, query in qs:
             feed_url = _INTENT_FEED_URL.format(query=query)
             try:
@@ -660,6 +675,340 @@ def discover_intent_from_jobicy(
                              "reason": "invalid JSON response"})
             return candidates, failures
         candidates.extend(parse_jobicy_json(data, limit=limit))
+    finally:
+        if should_close:
+            fetcher.close()
+    return candidates, failures
+
+
+# -- Reddit r/forhire RSS (§24 Tier 1) -------------------------------------------
+
+REDDIT_FORHIRE_RSS = "https://www.reddit.com/r/forhire/.rss"
+
+# Title patterns that signal service offers (not hiring)
+_OFFER_PATTERNS = re.compile(
+    r"\[for hire\]|\[offer\]|available for hire|offering my services",
+    re.IGNORECASE,
+)
+_HIRING_PATTERNS = re.compile(
+    r"\[hiring\]|looking for|need a|seeking|want to hire",
+    re.IGNORECASE,
+)
+
+
+def parse_reddit_forhire_rss(xml_bytes: bytes, source_url: str, limit: int = 30
+                             ) -> list[OpportunityCandidate]:
+    """Parse Reddit r/forhire RSS into OpportunityCandidate items.
+
+    [For Hire] posts = service providers offering skills.
+    [Hiring] posts = companies looking for workers (hiring signal).
+    Only [Hiring] posts are commercial intent for BAM services.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+
+    out: list[OpportunityCandidate] = []
+    for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+        if len(out) >= limit:
+            break
+        title_el = entry.find("{http://www.w3.org/2005/Atom}title")
+        link_el = entry.find("{http://www.w3.org/2005/Atom}link")
+        content_el = entry.find("{http://www.w3.org/2005/Atom}content")
+        author_el = entry.find("{http://www.w3.org/2005/Atom}author/{http://www.w3.org/2005/Atom}name")
+
+        if title_el is None or link_el is None:
+            continue
+
+        title = (title_el.text or "").strip()
+        link = link_el.get("href", "")
+        content = (content_el.text if content_el is not None else "") or ""
+        author = (author_el.text if author_el is not None else "") or ""
+
+        if not title or not link:
+            continue
+
+        # Skip [For Hire] posts — those are people offering, not buying
+        if _OFFER_PATTERNS.search(title):
+            continue
+
+        # [Hiring] posts are the signal
+        is_hiring = bool(_HIRING_PATTERNS.search(title))
+
+        try:
+            final_url = validate_url(link)
+        except Exception:
+            continue
+
+        title_clean = _scrub(title)[:200]
+        desc_clean = _scrub(_strip_html(content))[:600]
+        text = f"{title_clean}. {desc_clean}"
+        intent = score_intent(text)
+
+        # Hiring posts without service keywords still carry medium intent
+        if intent.tier in ("none", "weak") and is_hiring:
+            intent = IntentMatchUpgrade(intent, title_clean)
+        if intent.tier in ("none",):
+            continue
+
+        out.append(OpportunityCandidate(
+            company=author or None,
+            company_url=None,
+            source_url=final_url,
+            source_type="job_board:reddit_forhire",
+            published_at=None,
+            title=title_clean,
+            snippet=text[:400],
+            intent=intent,
+            evidence=[{"kind": "job_post", "status": "OBSERVED",
+                        "url": final_url, "excerpt": title_clean[:160]}],
+        ))
+    return out
+
+
+def discover_intent_from_reddit_forhire(
+    *, fetcher: Fetcher | None = None, limit: int = 30,
+) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
+    """Fetch Reddit r/forhire RSS; failures are skips, not crashes."""
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    candidates: list[OpportunityCandidate] = []
+    failures: list[dict[str, str]] = []
+    try:
+        try:
+            res = fetcher.fetch(REDDIT_FORHIRE_RSS)
+        except Exception as exc:
+            failures.append({"source": "reddit_forhire",
+                             "reason": f"fetch failed: {exc}"})
+            return candidates, failures
+        if res.status != 200:
+            failures.append({"source": "reddit_forhire",
+                             "reason": f"blocked: HTTP {res.status}"})
+            return candidates, failures
+        candidates.extend(parse_reddit_forhire_rss(
+            res.content, source_url=REDDIT_FORHIRE_RSS, limit=limit))
+    finally:
+        if should_close:
+            fetcher.close()
+    return candidates, failures
+
+
+# -- Freelancer.com HTML scraper (§24 Tier 1) ------------------------------------
+
+FREELANCER_CATEGORIES = (
+    "https://www.freelancer.com/projects/data-entry/",
+    "https://www.freelancer.com/projects/data-analysis/",
+    "https://www.freelancer.com/projects/software-development/",
+    "https://www.freelancer.com/projects/testing-qa/",
+)
+
+
+def _parse_freelancer_html(html_text: str | bytes, source_url: str,
+                           limit: int = 10) -> list[OpportunityCandidate]:
+    """Extract project cards from Freelancer.com HTML."""
+    if isinstance(html_text, bytes):
+        html_text = html_text.decode("utf-8", errors="replace")
+    out: list[OpportunityCandidate] = []
+
+    # Project card patterns: title links and descriptions
+    # Match <a href="/projects/...">...<title text>...</a>
+    title_pattern = re.compile(
+        r'<a[^>]*href="(/projects/[^"]+)"[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    desc_pattern = re.compile(
+        r'<div[^>]*class="[^"]*(?:project-description|text-body)[^"]*"'
+        r'[^>]*>(.*?)</div>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    budget_pattern = re.compile(
+        r'(?:USD|EUR|GBP|\$|€|£)\s*[\d,]+(?:\s*[-–]\s*(?:USD|EUR|GBP|\$|€|£)?\s*[\d,]+)?',
+        re.IGNORECASE,
+    )
+
+    found_urls: set[str] = set()
+    for match in title_pattern.finditer(html_text):
+        if len(out) >= limit:
+            break
+        rel_url, inner_html = match.group(1), match.group(2)
+        full_url = f"https://www.freelancer.com{rel_url}"
+        if full_url in found_urls:
+            continue
+        found_urls.add(full_url)
+
+        # Extract title from inner HTML (strip tags)
+        title_clean = _scrub(_strip_html(inner_html))[:200]
+        if not title_clean:
+            continue
+
+        # Try to find nearby description
+        desc_match = desc_pattern.search(html_text[match.start():match.start() + 2000])
+        desc = _scrub(_strip_html(desc_match.group(1)))[:400] if desc_match else ""
+
+        # Try to find budget
+        budget_match = budget_pattern.search(html_text[match.start():match.start() + 2000])
+        budget = budget_match.group(0) if budget_match else ""
+
+        text = f"{title_clean}. {desc}"
+        intent = score_intent(text)
+
+        # Freelancer posts are explicit service requests
+        if intent.tier in ("none", "weak"):
+            intent = IntentMatchUpgrade(intent, title_clean)
+        if intent.tier in ("none",):
+            continue
+
+        out.append(OpportunityCandidate(
+            company=None,
+            company_url=None,
+            source_url=validate_url(full_url),
+            source_type="job_board:freelancer",
+            published_at=None,
+            title=title_clean,
+            snippet=text[:400],
+            intent=intent,
+            evidence=[{"kind": "job_post", "status": "OBSERVED",
+                        "url": full_url, "excerpt": title_clean[:160]}],
+        ))
+    return out
+
+
+def discover_intent_from_freelancer(
+    *, fetcher: Fetcher | None = None, limit_per_category: int = 10,
+) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
+    """Fetch Freelancer.com project listings; failures are skips, not crashes."""
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    candidates: list[OpportunityCandidate] = []
+    failures: list[dict[str, str]] = []
+    try:
+        for cat_url in FREELANCER_CATEGORIES:
+            try:
+                res = fetcher.fetch(cat_url)
+            except Exception as exc:
+                failures.append({"source": "freelancer",
+                                 "reason": f"fetch failed: {exc}"})
+                continue
+            if res.status != 200:
+                failures.append({"source": "freelancer",
+                                 "reason": f"blocked: HTTP {res.status}"})
+                continue
+            candidates.extend(_parse_freelancer_html(
+                res.content, source_url=cat_url, limit=limit_per_category))
+    finally:
+        if should_close:
+            fetcher.close()
+    return candidates, failures
+
+
+# -- Workana HTML scraper (§24 Tier 1) -------------------------------------------
+
+WORKANA_CATEGORIES = (
+    "https://www.workana.com/jobs?category=data-entry",
+    "https://www.workana.com/jobs?category=it-programming",
+    "https://www.workana.com/jobs?category=writing-translation",
+)
+
+
+def _parse_workana_html(html_text: str | bytes, source_url: str,
+                        limit: int = 10) -> list[OpportunityCandidate]:
+    """Extract project cards from Workana HTML."""
+    if isinstance(html_text, bytes):
+        html_text = html_text.decode("utf-8", errors="replace")
+    out: list[OpportunityCandidate] = []
+
+    # Workana project cards
+    title_pattern = re.compile(
+        r'<h2[^>]*class="[^"]*project-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"'
+        r'[^>]*>([^<]+)</a>',
+        re.IGNORECASE,
+    )
+    desc_pattern = re.compile(
+        r'<p[^>]*class="[^"]*project-description[^"]*"[^>]*>(.*?)</p>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    budget_pattern = re.compile(
+        r'(?:USD|EUR|GBP|\$|€|£)\s*[\d,]+(?:\s*[-–]\s*(?:USD|EUR|GBP|\$|€|£)?\s*[\d,]+)?',
+        re.IGNORECASE,
+    )
+
+    found_urls: set[str] = set()
+    for match in title_pattern.finditer(html_text):
+        if len(out) >= limit:
+            break
+        rel_url, title = match.group(1), match.group(2)
+        if not rel_url.startswith("http"):
+            full_url = f"https://www.workana.com{rel_url}"
+        else:
+            full_url = rel_url
+        if full_url in found_urls:
+            continue
+        found_urls.add(full_url)
+
+        title_clean = _scrub(title)[:200]
+        if not title_clean:
+            continue
+
+        desc_match = desc_pattern.search(html_text[match.start():match.start() + 2000])
+        desc = _scrub(_strip_html(desc_match.group(1)))[:400] if desc_match else ""
+
+        budget_match = budget_pattern.search(html_text[match.start():match.start() + 2000])
+        budget = budget_match.group(0) if budget_match else ""
+
+        text = f"{title_clean}. {desc}"
+        intent = score_intent(text)
+
+        if intent.tier in ("none", "weak"):
+            intent = IntentMatchUpgrade(intent, title_clean)
+        if intent.tier in ("none",):
+            continue
+
+        out.append(OpportunityCandidate(
+            company=None,
+            company_url=None,
+            source_url=validate_url(full_url),
+            source_type="job_board:workana",
+            published_at=None,
+            title=title_clean,
+            snippet=text[:400],
+            intent=intent,
+            evidence=[{"kind": "job_post", "status": "OBSERVED",
+                        "url": full_url, "excerpt": title_clean[:160]}],
+        ))
+    return out
+
+
+def discover_intent_from_workana(
+    *, fetcher: Fetcher | None = None, limit_per_category: int = 10,
+) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
+    """Fetch Workana job listings; failures are skips, not crashes."""
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    candidates: list[OpportunityCandidate] = []
+    failures: list[dict[str, str]] = []
+    try:
+        for cat_url in WORKANA_CATEGORIES:
+            try:
+                res = fetcher.fetch(cat_url)
+            except Exception as exc:
+                failures.append({"source": "workana",
+                                 "reason": f"fetch failed: {exc}"})
+                continue
+            if res.status != 200:
+                failures.append({"source": "workana",
+                                 "reason": f"blocked: HTTP {res.status}"})
+                continue
+            candidates.extend(_parse_workana_html(
+                res.content, source_url=cat_url, limit=limit_per_category))
     finally:
         if should_close:
             fetcher.close()
