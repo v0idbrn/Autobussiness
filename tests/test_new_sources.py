@@ -182,20 +182,20 @@ def test_parse_jobicy_skips_invalid():
 
 # -- Source integration (discover_intent_from_feeds) ---------------------------
 
-def test_discover_feeds_includes_remote_sources():
+def test_discover_feeds_includes_freelance_platforms():
     from bam.intent_sources import discover_intent_from_feeds
-    # Verify the function accepts include_remote_boards parameter
+    # Verify the function accepts include_freelance_platforms parameter
     # We won't actually make network calls in unit tests
     import inspect
     sig = inspect.signature(discover_intent_from_feeds)
-    assert "include_remote_boards" in sig.parameters
+    assert "include_freelance_platforms" in sig.parameters
 
 
-def test_discover_feeds_can_disable_remote():
+def test_discover_feeds_can_disable_freelance_platforms():
     from bam.intent_sources import discover_intent_from_feeds
     import inspect
     sig = inspect.signature(discover_intent_from_feeds)
-    param = sig.parameters["include_remote_boards"]
+    param = sig.parameters["include_freelance_platforms"]
     assert param.default is True
 
 

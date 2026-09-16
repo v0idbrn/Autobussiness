@@ -284,16 +284,16 @@ def discover_intent_from_feeds(
     limit_per_query: int = 5,
     fetcher: Fetcher | None = None,
     include_job_boards: bool = True,
-    include_remote_boards: bool = True,
+    include_freelance_platforms: bool = True,
     directories: list[str] | None = None,
 ) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
-    """Full intent discovery: job boards + remote boards + news RSS + directories.
+    """Full intent discovery: job boards + freelance platforms + web search + directories.
 
     Sources (§24):
     - WordPress Jobs RSS (primary): hiring posts = explicit company intent
-    - We Work Remotely RSS (primary): remote job posts = hiring intent
-    - Remote OK JSON API (primary): remote job posts = hiring intent
-    - Jobicy JSON API (primary): remote job posts = hiring intent
+    - Freelancer.com (primary): direct service requests
+    - Reddit RSS (primary): help/hiring posts in relevant subreddits
+    - DuckDuckGo dorks (primary): direct intent searches
     - Google News RSS (secondary): explicit/strong request phrases only
     - Directory/association pages (tertiary): LEAD SIGNAL only, not intent
 
@@ -322,22 +322,7 @@ def discover_intent_from_feeds(
                 fetcher=fetcher, limit_per_feed=20)
             candidates.extend(jb)
             failures.extend(jb_fail)
-        if include_remote_boards:
-            # We Work Remotely
-            wwr, wwr_fail = discover_intent_from_wwrss(
-                fetcher=fetcher, limit_per_feed=20)
-            candidates.extend(wwr)
-            failures.extend(wwr_fail)
-            # Remote OK
-            rok, rok_fail = discover_intent_from_remoteok(
-                fetcher=fetcher, limit=20)
-            candidates.extend(rok)
-            failures.extend(rok_fail)
-            # Jobicy
-            jc, jc_fail = discover_intent_from_jobicy(
-                fetcher=fetcher, limit=20)
-            candidates.extend(jc)
-            failures.extend(jc_fail)
+        if include_freelance_platforms:
             # Reddit (multiple subreddits)
             reddit, reddit_fail = discover_intent_from_reddit(
                 fetcher=fetcher, services=services, limit_per_sub=15)
@@ -348,12 +333,17 @@ def discover_intent_from_feeds(
                 fetcher=fetcher, limit_per_category=10)
             candidates.extend(fl)
             failures.extend(fl_fail)
-            # Workana
-            wa, wa_fail = discover_intent_from_workana(
-                fetcher=fetcher, limit_per_category=10)
-            candidates.extend(wa)
-            failures.extend(wa_fail)
-            # Google dorks (Rank #5)
+            # Himalayas.app
+            him, him_fail = discover_intent_from_himalayas(
+                fetcher=fetcher, limit=20)
+            candidates.extend(him)
+            failures.extend(him_fail)
+            # Jobicy
+            jc, jc_fail = discover_intent_from_jobicy(
+                fetcher=fetcher, limit=20)
+            candidates.extend(jc)
+            failures.extend(jc_fail)
+            # Google dorks via DuckDuckGo (Rank #5)
             gd, gd_fail = discover_intent_from_google_dorks(
                 services=services, limit_per_dork=3)
             candidates.extend(gd)
@@ -595,6 +585,102 @@ def discover_intent_from_remoteok(
                              "reason": "invalid JSON response"})
             return candidates, failures
         candidates.extend(parse_remoteok_json(data, limit=limit))
+    finally:
+        if should_close:
+            fetcher.close()
+    return candidates, failures
+
+
+# -- Himalayas.app RSS source (§24) -----------------------------------------------
+
+HIMALAYAS_RSS_URL = "https://himalayas.app/jobs/rss"
+
+
+def parse_himalayas_rss(xml_bytes: bytes, *, source_url: str,
+                        limit: int = 20) -> list[OpportunityCandidate]:
+    """Parse Himalayas.app RSS into hiring-intent candidates.
+
+    Standard RSS 2.0 with <title>, <link>, <description>, <pubDate>,
+    <category>, <guid>.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+
+    out: list[OpportunityCandidate] = []
+    for item in (el for el in root.iter() if _local(el.tag) == "item"):
+        if len(out) >= limit:
+            break
+        title = link = desc = guid = None
+        categories: list[str] = []
+        for child in item:
+            tag = _local(child.tag)
+            if tag == "title" and child.text:
+                title = child.text.strip()
+            elif tag == "link" and child.text:
+                link = child.text.strip()
+            elif tag == "description" and child.text:
+                desc = child.text.strip()
+            elif tag == "guid" and child.text:
+                guid = child.text.strip()
+            elif tag == "category" and child.text:
+                categories.append(child.text.strip())
+        if not title or not link:
+            continue
+        try:
+            final_url = validate_url(link)
+        except Exception:
+            continue
+        title = _scrub(title)[:200]
+        desc_text = _scrub(_strip_html(desc or ""))[:600]
+        text = f"{title}. {desc_text}"
+        intent = score_intent(text)
+        # Hiring signal floor
+        if intent.tier in ("none", "weak"):
+            intent = IntentMatchUpgrade(intent, title)
+        if intent.tier in ("none",):
+            continue
+        out.append(OpportunityCandidate(
+            company=None,
+            company_url=None,
+            source_url=final_url,
+            source_type="job_board:himalayas",
+            published_at=_parse_pubdate(_item_field(item, "pubDate")),
+            title=title,
+            snippet=text[:400],
+            intent=intent,
+            evidence=[{"kind": "job_post", "status": "OBSERVED",
+                        "url": final_url, "excerpt": title[:160]}],
+        ))
+    return out
+
+
+def discover_intent_from_himalayas(
+    *, fetcher: Fetcher | None = None, limit: int = 20,
+) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
+    """Fetch Himalayas.app RSS feed; failures are skips, not crashes."""
+    should_close = False
+    if fetcher is None:
+        fetcher = Fetcher()
+        should_close = True
+    candidates: list[OpportunityCandidate] = []
+    failures: list[dict[str, str]] = []
+    try:
+        try:
+            res = fetcher.fetch(HIMALAYAS_RSS_URL)
+        except Exception as exc:
+            failures.append({"source": "himalayas",
+                             "reason": f"fetch failed: {exc}"})
+            return candidates, failures
+        if res.status != 200:
+            failures.append({"source": "himalayas",
+                             "reason": f"blocked: HTTP {res.status}"})
+            return candidates, failures
+        candidates.extend(parse_himalayas_rss(
+            res.content, source_url=HIMALAYAS_RSS_URL, limit=limit))
     finally:
         if should_close:
             fetcher.close()
@@ -1088,26 +1174,71 @@ def discover_intent_from_workana(
     return candidates, failures
 
 
-# -- Google dorks (§24 Rank #5) -------------------------------------------------
+# -- Google dorks via DuckDuckGo (§24 Rank #5) -----------------------------------
 
 def discover_intent_from_google_dorks(
     *,
     services: list[str] | None = None,
-    limit_per_dork: int = 5,
+    limit_per_dork: int = 3,
+    min_score: int = 60,
 ) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
-    """Search Google with dorks for direct intent; failures are skips, not crashes.
+    """Search DuckDuckGo with dorks for direct intent; failures are skips, not crashes.
     
-    NOTE: This function requires a websearch module which is not currently available.
-    For now, this returns empty results. To enable Google dorks:
-    1. Implement a websearch module that uses Google Custom Search API
-    2. Or use an external search service
+    Uses DuckDuckGo (free, no API key) instead of Google.
+    Each dork query returns up to limit_per_dork results.
+    Only results with score >= min_score are kept (explicit/strong intent).
     """
+    from bam.websearch import WebSearcher, WebSearchError
+
     candidates: list[OpportunityCandidate] = []
     failures: list[dict[str, str]] = []
     
-    # Google dorks require a websearch module which is not yet implemented
-    # For now, return empty results
-    failures.append({"source": "google_dorks", "reason": "websearch module not available"})
+    searcher = WebSearcher(min_interval_s=2.0, max_results=limit_per_dork)
+    
+    for svc in (services or list(GOOGLE_DORKS)):
+        dorks = GOOGLE_DORKS.get(svc, ())
+        for dork in dorks:
+            try:
+                results = searcher.search(dork, max_results=limit_per_dork)
+            except WebSearchError as exc:
+                failures.append({"source": f"google_dork:{svc}",
+                                 "reason": f"search failed: {exc}"})
+                continue
+            
+            for r in results:
+                if not r.url or not r.title:
+                    continue
+                try:
+                    final_url = validate_url(r.url)
+                except Exception:
+                    continue
+                
+                title = _scrub(r.title)[:200]
+                body = _scrub(r.body)[:600]
+                text = f"{title}. {body}"
+                intent = score_intent(text)
+                
+                # Dork results are explicit service requests
+                if intent.tier in ("none", "weak"):
+                    intent = IntentMatchUpgrade(intent, title)
+                if intent.tier in ("none",):
+                    continue
+                # Filter by score
+                if intent.score < min_score:
+                    continue
+                
+                candidates.append(OpportunityCandidate(
+                    company=None,
+                    company_url=None,
+                    source_url=final_url,
+                    source_type=f"google_dork:{svc}",
+                    published_at=None,
+                    title=title,
+                    snippet=text[:400],
+                    intent=intent,
+                    evidence=[{"kind": "web_search", "status": "OBSERVED",
+                               "url": final_url, "excerpt": title[:160]}],
+                ))
     
     return candidates, failures
 

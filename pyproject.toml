@@ -8,6 +8,7 @@ license = { text = "MIT" }
 # Runtime dependencies: EXACTLY these two. Everything else is dev/tooling.
 # Do not add pandas/pdfplumber/playwright here - services run in their own venvs.
 dependencies = [
+    "ddgs>=9.16.0",
     "httpx>=0.28,<1.0",
     "pyyaml>=6.0,<7.0",
 ]
