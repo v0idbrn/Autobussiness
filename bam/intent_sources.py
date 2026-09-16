@@ -39,6 +39,25 @@ JOB_BOARD_FEEDS: tuple[dict[str, str], ...] = (
 _INTENT_FEED_URL = ("https://news.google.com/rss/search?q={query}"
                     "&hl=en-US&gl=US&ceid=US:en")
 
+# Google dorks for direct intent (Rank #5 from analysis)
+GOOGLE_DORKS: dict[str, tuple[str, ...]] = {
+    "pdf_to_excel": (
+        '"need someone to" "PDF to Excel"',
+        '"looking for" "PDF conversion" Excel',
+        '"hiring" "data entry" "PDF" Excel',
+    ),
+    "excel_cleaning": (
+        '"need help" "clean" Excel spreadsheet',
+        '"looking for" "data cleaning" Excel',
+        '"hiring" "Excel cleanup" OR "spreadsheet cleaning"',
+    ),
+    "qa_automation": (
+        '"need someone to" "QA" OR "testing" website',
+        '"looking for" "automation" "testing" contractor',
+        '"hiring" "QA engineer" freelance',
+    ),
+}
+
 # Query families: need-phrase x service-topic (§5). Small and measurable.
 INTENT_QUERY_FAMILIES: dict[str, tuple[tuple[str, str], ...]] = {
     "pdf_to_excel": (
@@ -334,6 +353,11 @@ def discover_intent_from_feeds(
                 fetcher=fetcher, limit_per_category=10)
             candidates.extend(wa)
             failures.extend(wa_fail)
+            # Google dorks (Rank #5)
+            gd, gd_fail = discover_intent_from_google_dorks(
+                services=services, limit_per_dork=3)
+            candidates.extend(gd)
+            failures.extend(gd_fail)
         for lang, query in qs:
             feed_url = _INTENT_FEED_URL.format(query=query)
             try:
@@ -850,10 +874,10 @@ def discover_intent_from_reddit(
 # -- Freelancer.com HTML scraper (§24 Tier 1) ------------------------------------
 
 FREELANCER_CATEGORIES = (
-    "https://www.freelancer.com/projects/data-entry/",
-    "https://www.freelancer.com/projects/data-analysis/",
-    "https://www.freelancer.com/projects/software-development/",
-    "https://www.freelancer.com/projects/testing-qa/",
+    "https://www.freelancer.com/jobs/data-entry/",
+    "https://www.freelancer.com/jobs/data-analysis/",
+    "https://www.freelancer.com/jobs/software-development/",
+    "https://www.freelancer.com/jobs/testing-qa/",
 )
 
 
@@ -1061,6 +1085,30 @@ def discover_intent_from_workana(
     finally:
         if should_close:
             fetcher.close()
+    return candidates, failures
+
+
+# -- Google dorks (§24 Rank #5) -------------------------------------------------
+
+def discover_intent_from_google_dorks(
+    *,
+    services: list[str] | None = None,
+    limit_per_dork: int = 5,
+) -> tuple[list[OpportunityCandidate], list[dict[str, str]]]:
+    """Search Google with dorks for direct intent; failures are skips, not crashes.
+    
+    NOTE: This function requires a websearch module which is not currently available.
+    For now, this returns empty results. To enable Google dorks:
+    1. Implement a websearch module that uses Google Custom Search API
+    2. Or use an external search service
+    """
+    candidates: list[OpportunityCandidate] = []
+    failures: list[dict[str, str]] = []
+    
+    # Google dorks require a websearch module which is not yet implemented
+    # For now, return empty results
+    failures.append({"source": "google_dorks", "reason": "websearch module not available"})
+    
     return candidates, failures
 
 
